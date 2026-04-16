@@ -1,0 +1,61 @@
+{
+  "entities": {
+    "Client": {
+      "title": "Client",
+      "description": "Represents a customer in the system.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Full name of the client" },
+        "email": { "type": "string", "format": "email", "description": "Email address" },
+        "phone": { "type": "string", "description": "Contact phone number" },
+        "document": { "type": "string", "description": "CPF or CNPJ" },
+        "address": { "type": "string", "description": "Physical address" }
+      },
+      "required": ["name", "email", "document"]
+    },
+    "Contract": {
+      "title": "Contract",
+      "description": "A financial agreement with a client.",
+      "type": "object",
+      "properties": {
+        "clientId": { "type": "string", "description": "ID of the associated client" },
+        "description": { "type": "string", "description": "Service or product description" },
+        "totalAmount": { "type": "number", "description": "Total value of the contract" },
+        "installmentsCount": { "type": "number", "description": "Number of payments" },
+        "startDate": { "type": "string", "format": "date", "description": "Start date of the contract" },
+        "status": { "type": "string", "enum": ["active", "completed", "cancelled"] },
+        "lateInterestRate": { "type": "number", "description": "Daily interest rate for late payments" }
+      },
+      "required": ["clientId", "totalAmount", "installmentsCount", "startDate", "status"]
+    },
+    "Installment": {
+      "title": "Installment",
+      "description": "A single payment entry for a contract.",
+      "type": "object",
+      "properties": {
+        "contractId": { "type": "string", "description": "ID of the associated contract" },
+        "number": { "type": "number", "description": "Installer number (e.g., 1 of 12)" },
+        "amount": { "type": "number", "description": "Value of the installment" },
+        "dueDate": { "type": "string", "format": "date", "description": "Date the payment is due" },
+        "status": { "type": "string", "enum": ["pending", "paid", "overdue"] },
+        "paidAt": { "type": "string", "format": "date-time", "description": "When it was paid" },
+        "interest": { "type": "number", "description": "Accrued interest if late" }
+      },
+      "required": ["contractId", "number", "amount", "dueDate", "status"]
+    }
+  },
+  "firestore": {
+    "/clients": {
+      "schema": "Client",
+      "description": "List of all clients"
+    },
+    "/contracts": {
+      "schema": "Contract",
+      "description": "List of active and inactive contracts"
+    },
+    "/installments": {
+      "schema": "Installment",
+      "description": "Individual payment records linked to contracts"
+    }
+  }
+}
