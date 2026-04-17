@@ -22,11 +22,73 @@
 }
 
 @layer base {
+  /* ── iOS Safari: viewport height real (sem a barra do browser) ──────────────
+     dvh  = dynamic viewport height (iOS 16+, Chrome 108+)
+     --vh = fallback via JS para iOS 15 e abaixo                               */
+  :root {
+    --app-height: 100dvh;
+  }
+
+  html, body {
+    height: 100%;
+    /* Previne bounce/overscroll no iOS quando o modal está aberto */
+    overscroll-behavior: none;
+  }
+
   body {
     @apply bg-bg text-text-main font-sans;
+    /* Área segura para notch / Dynamic Island / barra de casa */
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+    /* Suaviza scroll no iOS */
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* ── Previne zoom automático no iOS quando foca inputs (fonte < 16px) ───────
+     iOS dá zoom se font-size < 16px. Forçamos 16px no foco e restauramos.    */
+  input, select, textarea {
+    font-size: 16px !important;
+  }
+
+  /* Garante que o select não quebre o layout no iOS */
+  select {
+    -webkit-appearance: none;
+    appearance: none;
+  }
+
+  /* Tap highlight transparente (remove o flash azul/cinza no iOS ao clicar) */
+  * {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* Texto não selecionável em botões (evita highlight indesejado no iOS) */
+  button {
+    -webkit-user-select: none;
+    user-select: none;
+    cursor: pointer;
   }
 }
 
+/* ── Layout principal usa altura real (fix h-screen no iOS) ─────────────────*/
+.app-shell {
+  height: var(--app-height);
+  height: 100dvh; /* dvh tem precedência em browsers modernos */
+}
+
+.app-sidebar {
+  height: var(--app-height);
+  height: 100dvh;
+}
+
+/* ── Scroll suave em listas ─────────────────────────────────────────────────*/
+.scroll-smooth-ios {
+  -webkit-overflow-scrolling: touch;
+  overflow-y: auto;
+}
+
+/* ── Componentes base ────────────────────────────────────────────────────────*/
 .panel-card {
   @apply bg-card border border-border rounded-xl;
 }
