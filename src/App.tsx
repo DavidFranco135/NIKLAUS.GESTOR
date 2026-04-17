@@ -1650,10 +1650,9 @@ export default function App() {
   // ── Loading screen ──
   if (user === undefined) {
     return (
-      <div className="flex items-center justify-center bg-bg" style={{ minHeight: 'var(--app-height, 100dvh)' }}>
-          <div className="w-8 h-8 border-2 border-accent border-t-transparent rounded-full animate-spin" />
-          <p className="text-text-dim text-sm">Carregando...</p>
-        </div>
+      <div className="flex flex-col items-center justify-center gap-4 bg-bg" style={{ minHeight: 'var(--app-height, 100dvh)' }}>
+        <div className="w-8 h-8 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+        <p className="text-text-dim text-sm">Carregando...</p>
       </div>
     );
   }
