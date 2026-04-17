@@ -1,32 +1,14 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    
-    // ===============================================================
-    // Assumed Data Model
-    // ===============================================================
-    //
-    // Collection: clients
-    // Fields: name (string), email (string), phone (string), document (string), address (string)
-    //
-    // Collection: contracts
-    // Fields: clientId (string), description (string), totalAmount (number), 
-    //         installmentsCount (number), startDate (string), status (string), lateInterestRate (number)
-    //
-    // Collection: installments
-    // Fields: contractId (string), number (number), amount (number), 
-    //         dueDate (string), status (string), paidAt (string?), interest (number?)
-    //
-    // ===============================================================
 
-    // Helper Functions
     function isAuthenticated() {
       return request.auth != null;
     }
 
     function isValidClient(data) {
       return data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
-             data.email is string && data.email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$") &&
+             data.email is string && data.email.size() > 3 &&
              data.document is string && data.document.size() >= 11;
     }
 
@@ -44,9 +26,8 @@ service cloud.firestore {
              data.status in ['pending', 'paid', 'overdue'];
     }
 
-    // Rules
     match /clients/{clientId} {
-      allow read: if true; // Keeping visible for demo, harden if sensitive
+      allow read: if true;
       allow write: if isAuthenticated() && isValidClient(request.resource.data);
     }
 
