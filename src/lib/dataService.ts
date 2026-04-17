@@ -222,16 +222,24 @@ class DataService {
   }
 
   private initFirebase() {
-    this.testConnection();
-    const handleError = (error: any, path: string) => {
-      if (error.code === 'permission-denied') {
-        if (this.isFirebaseAccessible) {
-          console.warn(`[Firebase] Acesso negado a "${path}". Modo offline ativado.`);
-          this.isFirebaseAccessible = false;
-        }
-      } else {
-        console.error(`[Firestore] ${path}:`, error.message);
-      }
+  this.testConnection();
+  
+  // Não deixe erros de READ desativar os WRITES
+  onSnapshot(collection(db, 'clients'), s => {
+    this.clients = s.docs.map(d => ({ id: d.id, ...d.data() } as Client));
+    this.notify();
+  }, e => console.warn('[Firebase] clients read:', e.message));
+
+  onSnapshot(collection(db, 'contracts'), s => {
+    this.contracts = s.docs.map(d => ({ id: d.id, ...d.data() } as Contract));
+    this.notify();
+  }, e => console.warn('[Firebase] contracts read:', e.message));
+
+  onSnapshot(collection(db, 'installments'), s => {
+    this.installments = s.docs.map(d => ({ id: d.id, ...d.data() } as Installment));
+    this.notify();
+  }, e => console.warn('[Firebase] installments read:', e.message));
+}
     };
     onSnapshot(collection(db, 'clients'), s => {
       this.clients = s.docs.map(d => ({ id: d.id, ...d.data() } as Client));
