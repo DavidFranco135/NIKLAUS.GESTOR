@@ -802,9 +802,17 @@ const ReportsView = ({ clients, contracts }: any) => {
 const WhatsAppView = () => {
   const settings = dataService.getSettings();
   const enriched = dataService.getEnrichedInstallments();
+  const stats = dataService.getStats();
   const [filter, setFilter] = useState<'overdue' | 'pending'>('overdue');
   const [customMsg, setCustomMsg] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  // Relatório em massa
+  const [reportPhone, setReportPhone] = useState('');
+  const [reportDays, setReportDays] = useState('7');
+  const [previewMsg, setPreviewMsg] = useState('');
+  const [previewTitle, setPreviewTitle] = useState('');
+  const [showPreview, setShowPreview] = useState(false);
 
   const items = enriched.filter(i => i.status === filter && i.clientPhone);
 
@@ -824,17 +832,216 @@ const WhatsAppView = () => {
     window.open(`https://wa.me/55${phone}?text=${encodeURIComponent(msg)}`, '_blank');
   };
 
+  const sendReport = (msg: string) => {
+    const phone = reportPhone.replace(/\D/g, '');
+    if (!phone) { alert('Informe o número de destino antes de enviar.'); return; }
+    window.open(`https://wa.me/55${phone}?text=${encodeURIComponent(msg)}`, '_blank');
+  };
+
+  const openPreview = (title: string, msg: string) => {
+    setPreviewTitle(title);
+    setPreviewMsg(msg);
+    setShowPreview(true);
+  };
+
+  const buildOverdueReport = () => {
+    const overdue = enriched.filter(i => i.status === 'overdue');
+    if (overdue.length === 0) return '✅ Nenhuma parcela em atraso no momento!';
+    const today = format(new Date(), 'dd/MM/yyyy');
+    let msg = `📋 *RELATÓRIO DE VENCIDOS*\n`;
+    msg += `📅 Data: ${today}\n`;
+    msg += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    overdue.forEach((i, idx) => {
+      msg += `*${idx + 1}. ${i.clientName}*\n`;
+      msg += `   📄 ${i.contractDescription}\n`;
+      msg += `   📅 Venceu: ${fmtDate(i.dueDate)} (${i.daysLate}d atraso)\n`;
+      msg += `   💰 Principal: R$ ${fmt(i.amount)}\n`;
+      if (i.computedInterest > 0) msg += `   📈 Juros: R$ ${fmt(i.computedInterest)}\n`;
+      msg += `   💳 *Total: R$ ${fmt(i.totalDue)}*\n\n`;
+    });
+    msg += `━━━━━━━━━━━━━━━━━━━━━\n`;
+    msg += `📊 *Total em atraso: R$ ${fmt(overdue.reduce((s, i) => s + i.totalDue, 0))}*\n`;
+    msg += `🔢 Parcelas: ${overdue.length}`;
+    return msg;
+  };
+
+  const buildUpcomingReport = () => {
+    const days = parseInt(reportDays) || 7;
+    const upcoming = enriched.filter(i => {
+      if (i.status !== 'pending') return false;
+      const diff = differenceInDays(new Date(i.dueDate + 'T00:00:00'), new Date());
+      return diff >= 0 && diff <= days;
+    }).sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+    if (upcoming.length === 0) return `✅ Nenhum vencimento nos próximos ${days} dias!`;
+    const today = format(new Date(), 'dd/MM/yyyy');
+    let msg = `⏰ *RELATÓRIO — PRESTES A VENCER*\n`;
+    msg += `📅 Data: ${today} · Próximos ${days} dias\n`;
+    msg += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    upcoming.forEach((i, idx) => {
+      const diff = differenceInDays(new Date(i.dueDate + 'T00:00:00'), new Date());
+      msg += `*${idx + 1}. ${i.clientName}*\n`;
+      msg += `   📄 ${i.contractDescription}\n`;
+      msg += `   📅 Vence: ${fmtDate(i.dueDate)} ${diff === 0 ? '*(HOJE)*' : diff === 1 ? '*(amanhã)*' : `*(em ${diff}d)*`}\n`;
+      msg += `   💳 *Valor: R$ ${fmt(i.amount)}*\n\n`;
+    });
+    msg += `━━━━━━━━━━━━━━━━━━━━━\n`;
+    msg += `📊 *Total a receber: R$ ${fmt(upcoming.reduce((s, i) => s + i.amount, 0))}*\n`;
+    msg += `🔢 Parcelas: ${upcoming.length}`;
+    return msg;
+  };
+
+  const buildTotalReport = () => {
+    const today = format(new Date(), 'dd/MM/yyyy');
+    const overdue = enriched.filter(i => i.status === 'overdue');
+    const pending = enriched.filter(i => i.status === 'pending');
+    const paid = enriched.filter(i => i.status === 'paid');
+    let msg = `📊 *RELATÓRIO GERAL DA CARTEIRA*\n`;
+    msg += `📅 ${today}\n`;
+    msg += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    msg += `✅ *Recebido:* R$ ${fmt(stats.received)}\n`;
+    msg += `⏳ *Pendente:* R$ ${fmt(stats.pending)} (${pending.length} parcelas)\n`;
+    msg += `🚨 *Em Atraso:* R$ ${fmt(stats.overdue)} (${overdue.length} parcelas)\n`;
+    msg += `📈 *Juros acumulados:* R$ ${fmt(stats.totalInterest)}\n\n`;
+    msg += `━━━━━━━━━━━━━━━━━━━━━\n`;
+    msg += `💼 *Total da carteira: R$ ${fmt(stats.totalValue)}*\n`;
+    msg += `👥 Contratos ativos: ${stats.activeContracts}\n`;
+    if (overdue.length > 0) {
+      msg += `\n⚠️ *Top inadimplentes:*\n`;
+      const topOverdue = [...overdue].sort((a, b) => b.totalDue - a.totalDue).slice(0, 3);
+      topOverdue.forEach(i => { msg += `   • ${i.clientName}: R$ ${fmt(i.totalDue)} (${i.daysLate}d)\n`; });
+    }
+    return msg;
+  };
+
+  const reportButtons = [
+    {
+      label: '🚨 Vencidos',
+      desc: 'Lista todos os atrasados com juros',
+      color: 'border-danger/30 text-danger bg-danger/5 hover:bg-danger/10',
+      build: buildOverdueReport,
+      title: 'Relatório de Vencidos',
+    },
+    {
+      label: '⏰ Prestes a Vencer',
+      desc: `Vencimentos nos próximos ${reportDays} dias`,
+      color: 'border-warning/30 text-warning bg-warning/5 hover:bg-warning/10',
+      build: buildUpcomingReport,
+      title: 'Prestes a Vencer',
+    },
+    {
+      label: '📊 Relatório Total',
+      desc: 'Resumo completo da carteira',
+      color: 'border-accent/30 text-accent bg-accent/5 hover:bg-accent/10',
+      build: buildTotalReport,
+      title: 'Relatório Total da Carteira',
+    },
+  ];
+
   return (
     <div className="space-y-5">
+
+      {/* Relatórios em Massa */}
+      <div className="panel-card p-5 space-y-4">
+        <div>
+          <h3 className="font-semibold text-sm">Enviar Relatório via WhatsApp</h3>
+          <p className="text-xs text-text-dim mt-0.5">Digite o número de destino e escolha o relatório para enviar.</p>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label className="block text-[11px] font-medium text-text-dim uppercase tracking-wider mb-1.5">Número de Destino</label>
+            <div className="flex gap-2 items-center">
+              <span className="text-xs text-text-dim border border-border rounded-lg px-3 py-2 bg-sidebar shrink-0">🇧🇷 +55</span>
+              <input
+                value={reportPhone}
+                onChange={e => setReportPhone(e.target.value)}
+                placeholder="(11) 99999-9999"
+                className="flex-1 bg-bg border border-border rounded-lg px-3 py-2 text-sm text-text-main outline-none focus:border-accent/50 transition-colors placeholder:text-text-dim/40"
+              />
+            </div>
+            <p className="text-[10px] text-text-dim mt-1">Pode ser o seu próprio número ou de um sócio.</p>
+          </div>
+          <div>
+            <label className="block text-[11px] font-medium text-text-dim uppercase tracking-wider mb-1.5">Janela "Prestes a Vencer"</label>
+            <select
+              value={reportDays}
+              onChange={e => setReportDays(e.target.value)}
+              className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-sm text-text-main outline-none focus:border-accent/50"
+            >
+              {['3', '5', '7', '10', '15', '30'].map(d => (
+                <option key={d} value={d}>Próximos {d} dias</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {reportButtons.map(btn => (
+            <div key={btn.label} className={`border rounded-xl p-4 flex flex-col gap-3 transition-colors ${btn.color}`}>
+              <div>
+                <p className="font-bold text-sm">{btn.label}</p>
+                <p className="text-[11px] opacity-70 mt-0.5">{btn.desc}</p>
+              </div>
+              <div className="flex gap-2 mt-auto">
+                <button
+                  onClick={() => openPreview(btn.title, btn.build())}
+                  className="flex-1 text-[11px] font-semibold py-1.5 rounded-lg border border-current/30 bg-black/10 hover:bg-black/20 transition-colors"
+                >
+                  👁 Prévia
+                </button>
+                <button
+                  onClick={() => sendReport(btn.build())}
+                  className="flex-1 text-[11px] font-bold py-1.5 rounded-lg bg-[#25D366]/20 text-[#25D366] border border-[#25D366]/30 hover:bg-[#25D366]/30 transition-colors flex items-center justify-center gap-1"
+                >
+                  <MessageCircle size={11} /> Enviar
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Preview Modal */}
+      <AnimatePresence>
+        {showPreview && (
+          <Modal title={`Prévia — ${previewTitle}`} onClose={() => setShowPreview(false)}>
+            <div className="space-y-4">
+              <div className="bg-[#075E54] rounded-xl p-4">
+                <div className="bg-[#DCF8C6] rounded-lg p-3 text-[#111] text-xs whitespace-pre-wrap font-mono leading-relaxed max-h-80 overflow-y-auto">
+                  {previewMsg}
+                </div>
+              </div>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => { sendReport(previewMsg); setShowPreview(false); }}
+                  className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg bg-[#25D366] text-white text-xs font-bold hover:brightness-110 transition-all"
+                >
+                  <MessageCircle size={14} /> Enviar via WhatsApp
+                </button>
+                <button
+                  onClick={() => { navigator.clipboard.writeText(previewMsg); }}
+                  className="px-4 py-2.5 rounded-lg border border-border text-text-dim text-xs hover:bg-white/5 transition-colors"
+                >
+                  📋 Copiar
+                </button>
+              </div>
+            </div>
+          </Modal>
+        )}
+      </AnimatePresence>
+
+      {/* Mensagem individual personalizada */}
       <div className="panel-card p-5">
-        <h3 className="font-semibold text-sm mb-4">Mensagem Personalizada <span className="text-text-dim font-normal">(opcional — deixe vazio para usar template)</span></h3>
+        <h3 className="font-semibold text-sm mb-4">Mensagem Individual Personalizada <span className="text-text-dim font-normal">(opcional — deixe vazio para usar template)</span></h3>
         <textarea value={customMsg} onChange={e => setCustomMsg(e.target.value)} rows={3}
           placeholder={`Template atual: ${settings.whatsappTemplate.slice(0, 60)}...`}
           className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-sm text-text-main outline-none focus:border-accent/50 resize-none placeholder:text-text-dim/40" />
       </div>
+
+      {/* Envio individual */}
       <div className="panel-card overflow-hidden">
         <div className="p-5 border-b border-border flex items-center justify-between">
-          <h3 className="font-semibold text-sm">Enviar Lembretes via WhatsApp</h3>
+          <h3 className="font-semibold text-sm">Enviar Lembretes Individuais</h3>
           <div className="flex gap-1 bg-bg border border-border rounded-lg p-1 text-xs">
             {(['overdue', 'pending'] as const).map(f => (
               <button key={f} onClick={() => setFilter(f)} className={`px-3 py-1 rounded transition-colors font-medium ${filter === f ? 'bg-accent text-bg' : 'text-text-dim hover:text-text-main'}`}>
@@ -1264,10 +1471,10 @@ export default function App() {
           </nav>
           <div className="mt-auto">
             <div className="bg-white/[0.02] border border-border p-3 rounded-lg mb-4 text-[11px]">
-              <p className="text-text-dim mb-1 opacity-60">produzido por</p>
+              <p className="text-text-dim mb-1 opacity-60">Firebase Cloud</p>
               <div className="flex items-center gap-2">
                 <div className="w-1.5 h-1.5 bg-accent rounded-full shadow-[0_0_8px_rgba(16,185,129,0.5)] animate-pulse" />
-                <span className="text-text-dim font-mono">NIKLAUS®</span>
+                <span className="text-text-dim font-mono">niklausgestor.app</span>
               </div>
             </div>
             <button onClick={handleLogout} className="w-full flex items-center gap-3 px-3 py-2 text-xs font-medium text-text-dim hover:text-danger transition-colors text-left">
