@@ -289,20 +289,22 @@ class DataService {
 
   // ─── Client CRUD ─────────────────────────────────────────────────────────────
 
-  async addClient(client: Omit<Client, 'id'>) {
-    if (!this.isFirebaseAccessible) {
-      const nc = { ...client, id: `cl-${Date.now()}` };
-      this.clients.push(nc); this.notify(); return nc;
-    }
-    try {
-      const ref = await addDoc(collection(db, 'clients'), client);
-      return { ...client, id: ref.id };
-    } catch (e) {
-      console.error('[addClient]', e);
-      const nc = { ...client, id: `cl-${Date.now()}` };
-      this.clients.push(nc); this.notify(); return nc;
-    }
+ async addClient(client: Omit<Client, 'id'>) {
+  const user = auth.currentUser;
+  if (!user) {
+    // fallback local se não autenticado
+    const nc = { ...client, id: `cl-${Date.now()}` };
+    this.clients.push(nc); this.notify(); return nc;
   }
+  try {
+    const ref = await addDoc(collection(db, 'clients'), client);
+    return { ...client, id: ref.id };
+  } catch (e) {
+    console.error('[addClient]', e);
+    const nc = { ...client, id: `cl-${Date.now()}` };
+    this.clients.push(nc); this.notify(); return nc;
+  }
+}
 
   async updateClient(id: string, data: Partial<Client>) {
     this.clients = this.clients.map(c => c.id === id ? { ...c, ...data } : c);
