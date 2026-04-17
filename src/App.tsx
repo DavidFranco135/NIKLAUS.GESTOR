@@ -744,11 +744,78 @@ const ClientsView = ({ clients, contracts, onRefresh }: { clients: Client[]; con
   );
 };
 
+// ─── ContractEditForm ────────────────────────────────────────────────────────
+
+const ContractEditForm = ({ contract, clients, onSave, onClose }: { contract: Contract; clients: Client[]; onSave: (d: any) => void; onClose: () => void }) => {
+  const [form, setForm] = useState({
+    clientId: contract.clientId,
+    description: contract.description,
+    status: contract.status,
+    lateInterestRate: String(contract.lateInterestRate ?? 0),
+    interestType: (contract.interestType ?? 'compound') as 'compound' | 'simple',
+  });
+
+  return (
+    <form className="space-y-4" onSubmit={e => { e.preventDefault(); onSave(form); }}>
+      <div className="bg-warning/5 border border-warning/20 rounded-lg px-3 py-2 text-[11px] text-warning">
+        ⚠ Edição de contrato altera apenas os campos abaixo. Parcelas já geradas não são recalculadas.
+      </div>
+
+      <Field label="Cliente">
+        <Select value={form.clientId} onChange={e => setForm(f => ({ ...f, clientId: e.target.value }))}>
+          {clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </Select>
+      </Field>
+
+      <Field label="Descrição">
+        <Input value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} placeholder="Ex: Empréstimo pessoal" />
+      </Field>
+
+      <Field label="Status">
+        <Select value={form.status} onChange={e => setForm(f => ({ ...f, status: e.target.value as Contract['status'] }))}>
+          <option value="active">Ativo</option>
+          <option value="completed">Concluído</option>
+          <option value="cancelled">Cancelado</option>
+        </Select>
+      </Field>
+
+      <div>
+        <label className="block text-[11px] font-medium text-text-dim uppercase tracking-wider mb-2">Juros por Atraso</label>
+        <div className="space-y-3">
+          <Field label="Taxa de Juros/dia (%)">
+            <Input type="number" min="0" step="0.01" value={form.lateInterestRate}
+              onChange={e => setForm(f => ({ ...f, lateInterestRate: e.target.value }))} />
+          </Field>
+          <div className="grid grid-cols-2 gap-2">
+            {([
+              { id: 'compound', label: 'Composto', desc: 'Juros sobre juros' },
+              { id: 'simple', label: 'Simples', desc: 'Juros sobre o principal' },
+            ] as const).map(opt => (
+              <button key={opt.id} type="button"
+                onClick={() => setForm(f => ({ ...f, interestType: opt.id }))}
+                className={`p-3 rounded-lg text-left border transition-all ${form.interestType === opt.id ? 'bg-accent/10 border-accent text-accent' : 'bg-bg border-border text-text-dim hover:border-accent/40'}`}>
+                <div className="font-bold text-xs">{opt.label}</div>
+                <div className="text-[10px] opacity-70 mt-0.5">{opt.desc}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="flex gap-3 pt-2">
+        <Btn type="submit">Salvar Alterações</Btn>
+        <Btn type="button" variant="ghost" onClick={onClose}>Cancelar</Btn>
+      </div>
+    </form>
+  );
+};
+
 // ─── ContractsView ────────────────────────────────────────────────────────────
 
 const ContractsView = ({ contracts, clients, installments, onRefresh, onNavigate }: any) => {
   const [search, setSearch] = useState('');
-  const [modal, setModal] = useState(false);
+  const [addModal, setAddModal] = useState(false);
+  const [editingContract, setEditingContract] = useState<Contract | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
 
   const enriched = dataService.getEnrichedInstallments();
@@ -758,8 +825,23 @@ const ContractsView = ({ contracts, clients, installments, onRefresh, onNavigate
     return (client?.name ?? '').toLowerCase().includes(search.toLowerCase()) || c.description.toLowerCase().includes(search.toLowerCase());
   });
 
-  const handleSave = async (data: any) => { await dataService.addContract(data); setModal(false); onRefresh(); };
-  const handleDelete = async (id: string) => { if (!window.confirm('Excluir este contrato e suas parcelas?')) return; await dataService.deleteContract(id); onRefresh(); };
+  const handleAdd = async (data: any) => { await dataService.addContract(data); setAddModal(false); onRefresh(); };
+  const handleEdit = async (data: any) => {
+    if (!editingContract) return;
+    await dataService.updateContract(editingContract.id, {
+      clientId: data.clientId,
+      description: data.description,
+      status: data.status,
+      lateInterestRate: parseFloat(data.lateInterestRate) || 0,
+      interestType: data.interestType,
+    });
+    setEditingContract(null);
+    onRefresh();
+  };
+  const handleDelete = async (id: string) => {
+    if (!window.confirm('Excluir este contrato e suas parcelas?')) return;
+    await dataService.deleteContract(id); onRefresh();
+  };
 
   const contractStats = dataService.getStats();
   const enrichedAll = dataService.getEnrichedInstallments();
@@ -783,8 +865,7 @@ const ContractsView = ({ contracts, clients, installments, onRefresh, onNavigate
     <div className="space-y-4">
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
         {summaryCards.map(s => (
-          <div
-            key={s.label}
+          <div key={s.label}
             className={`panel-card p-4 transition-all ${s.nav ? 'cursor-pointer hover:border-accent/40' : ''}`}
             onClick={() => s.nav && onNavigate('due-dates', s.nav)}
           >
@@ -803,7 +884,7 @@ const ContractsView = ({ contracts, clients, installments, onRefresh, onNavigate
               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-dim" />
               <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar..." className="bg-bg border border-border rounded-lg pl-9 pr-4 py-1.5 text-xs outline-none focus:border-accent/40 w-full" />
             </label>
-            <Btn onClick={() => setModal(true)}><Plus size={14} /> Novo Contrato</Btn>
+            <Btn onClick={() => setAddModal(true)}><Plus size={14} /> Novo Contrato</Btn>
           </div>
         </div>
         <div className="divide-y divide-border/20">
@@ -812,6 +893,8 @@ const ContractsView = ({ contracts, clients, installments, onRefresh, onNavigate
             const client = clients.find((cl: Client) => cl.id === c.clientId);
             const insts = enriched.filter((i: EnrichedInstallment) => i.contractId === c.id);
             const paid = insts.filter((i: EnrichedInstallment) => i.status === 'paid').length;
+            const overdueInsts = insts.filter((i: EnrichedInstallment) => i.status === 'overdue');
+            const totalInterestOnContract = insts.reduce((s: number, i: EnrichedInstallment) => s + i.computedInterest, 0);
             const isOpen = expanded === c.id;
             return (
               <div key={c.id}>
@@ -820,31 +903,92 @@ const ContractsView = ({ contracts, clients, installments, onRefresh, onNavigate
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-medium text-sm text-text-main">{client?.name ?? '—'}</span>
                       {statusBadge(c.status)}
+                      {/* Badge de tipo de juros configurado */}
+                      {(c.lateInterestRate ?? 0) > 0 && (
+                        <span className="px-1.5 py-0.5 rounded bg-warning/10 text-warning text-[9px] font-bold">
+                          {c.lateInterestRate}%/dia {c.interestType === 'simple' ? '(simples)' : '(composto)'}
+                        </span>
+                      )}
                     </div>
-                    <div className="text-xs text-text-dim mt-0.5">{c.description} · {c.installmentsCount}x R$ {fmt(c.totalAmount / c.installmentsCount)}</div>
+                    <div className="text-xs text-text-dim mt-0.5">
+                      {c.description} · {c.installmentsCount}x R$ {fmt(c.totalAmount / c.installmentsCount)}
+                      {/* Mostra juros acumulados se houver atraso */}
+                      {totalInterestOnContract > 0 && (
+                        <span className="ml-2 text-danger">· +R$ {fmt(totalInterestOnContract)} juros</span>
+                      )}
+                    </div>
                   </div>
                   <div className="text-right shrink-0">
                     <div className="font-bold text-text-main text-sm">R$ {fmt(c.totalAmount)}</div>
                     <div className="text-[11px] text-text-dim">{paid}/{c.installmentsCount} pagas</div>
+                    {overdueInsts.length > 0 && (
+                      <div className="text-[10px] text-danger">{overdueInsts.length} em atraso</div>
+                    )}
                   </div>
-                  <div className="flex gap-1">
-                    <button onClick={() => setExpanded(isOpen ? null : c.id)} className="p-1.5 hover:bg-sidebar rounded text-text-dim hover:text-text-main transition-all">{isOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}</button>
-                    <button onClick={() => handleDelete(c.id)} className="p-1.5 hover:bg-danger/10 rounded text-text-dim hover:text-danger transition-all"><Trash2 size={13} /></button>
+                  <div className="flex gap-1 shrink-0">
+                    <button
+                      onClick={() => setExpanded(isOpen ? null : c.id)}
+                      className="p-1.5 hover:bg-sidebar rounded text-text-dim hover:text-text-main transition-all"
+                      title="Ver parcelas"
+                    >
+                      {isOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                    </button>
+                    <button
+                      onClick={() => setEditingContract(c)}
+                      className="p-1.5 hover:bg-sidebar rounded text-text-dim hover:text-text-main transition-all"
+                      title="Editar contrato"
+                    >
+                      <Edit3 size={13} />
+                    </button>
+                    <button
+                      onClick={() => handleDelete(c.id)}
+                      className="p-1.5 hover:bg-danger/10 rounded text-text-dim hover:text-danger transition-all"
+                      title="Excluir contrato"
+                    >
+                      <Trash2 size={13} />
+                    </button>
                   </div>
                 </div>
                 {isOpen && (
                   <div className="bg-bg border-t border-border/40 px-6 py-4">
+                    {/* Resumo de juros do contrato */}
+                    {(c.lateInterestRate ?? 0) > 0 && (
+                      <div className="mb-3 flex gap-3 flex-wrap text-[10px]">
+                        <span className="px-2 py-1 rounded bg-warning/10 text-warning border border-warning/20">
+                          Taxa: {c.lateInterestRate}%/dia · {c.interestType === 'simple' ? 'Juros Simples' : 'Juros Compostos'}
+                        </span>
+                        {totalInterestOnContract > 0 && (
+                          <span className="px-2 py-1 rounded bg-danger/10 text-danger border border-danger/20">
+                            Juros acumulados: R$ {fmt(totalInterestOnContract)}
+                          </span>
+                        )}
+                        {totalInterestOnContract === 0 && (
+                          <span className="px-2 py-1 rounded bg-sidebar text-text-dim border border-border">
+                            Sem atraso — juros zerados
+                          </span>
+                        )}
+                      </div>
+                    )}
                     <div className="text-[11px] text-text-dim uppercase tracking-widest mb-3">Parcelas</div>
                     <div className="space-y-2">
                       {insts.map((inst: EnrichedInstallment) => (
-                        <div key={inst.id} className="flex items-center gap-3 text-xs">
+                        <div key={inst.id} className="flex items-center gap-3 text-xs flex-wrap">
                           <span className="text-text-dim w-16 shrink-0">Parcela {inst.number}</span>
                           <span className="font-mono text-text-main w-24 shrink-0">R$ {fmt(inst.amount)}</span>
                           <span className="text-text-dim w-24 shrink-0">{fmtDate(inst.dueDate)}</span>
                           {statusBadge(inst.status)}
-                          {inst.status === 'overdue' && <span className="text-danger text-[10px]">+R$ {fmt(inst.computedInterest)} juros ({inst.daysLate}d)</span>}
+                          {inst.status === 'overdue' && (
+                            <span className="text-danger text-[10px] font-mono">
+                              +R$ {fmt(inst.computedInterest)} juros · {inst.daysLate}d atraso
+                            </span>
+                          )}
+                          {inst.status === 'paid' && (inst as any).interestPaid > 0 && (
+                            <span className="text-accent text-[10px]">
+                              (juros pago: R$ {fmt((inst as any).interestPaid)})
+                            </span>
+                          )}
                           {inst.status !== 'paid'
-                            ? <button onClick={() => { dataService.markInstallmentPaid(inst.id); onRefresh(); }} className="ml-auto px-2 py-0.5 rounded bg-accent/10 text-accent text-[10px] hover:bg-accent/20 transition-colors">Marcar Pago</button>
+                            ? <button onClick={() => { dataService.markInstallmentPaid(inst.id); onRefresh(); }} className="ml-auto px-2 py-0.5 rounded bg-accent/10 text-accent text-[10px] hover:bg-accent/20 transition-colors">✓ Marcar Pago</button>
                             : <button onClick={() => { dataService.markInstallmentPending(inst.id); onRefresh(); }} className="ml-auto px-2 py-0.5 rounded bg-sidebar text-text-dim text-[10px] hover:bg-white/5 transition-colors border border-border">Desfazer</button>
                           }
                         </div>
@@ -858,9 +1002,14 @@ const ContractsView = ({ contracts, clients, installments, onRefresh, onNavigate
         </div>
       </div>
       <AnimatePresence>
-        {modal && (
-          <Modal title="Novo Contrato" onClose={() => setModal(false)}>
-            <ContractForm clients={clients} onSave={handleSave} onClose={() => setModal(false)} />
+        {addModal && (
+          <Modal title="Novo Contrato" onClose={() => setAddModal(false)}>
+            <ContractForm clients={clients} onSave={handleAdd} onClose={() => setAddModal(false)} />
+          </Modal>
+        )}
+        {editingContract && (
+          <Modal title={`Editar Contrato — ${clients.find((cl: Client) => cl.id === editingContract.clientId)?.name ?? 'Contrato'}`} onClose={() => setEditingContract(null)}>
+            <ContractEditForm contract={editingContract} clients={clients} onSave={handleEdit} onClose={() => setEditingContract(null)} />
           </Modal>
         )}
       </AnimatePresence>
