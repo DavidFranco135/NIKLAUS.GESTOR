@@ -2,43 +2,28 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    function isAuthenticated() {
-      return request.auth != null;
+    // ── Dados isolados por usuário ────────────────────────────────────────────
+    // Cada usuário só acessa seus próprios dados em /users/{uid}/**
+    // Isso cobre clients, contracts e installments de forma automática.
+    match /users/{userId}/{document=**} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
     }
 
-    function isValidClient(data) {
-      return data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
-             data.email is string && data.email.size() > 3 &&
-             data.document is string && data.document.size() >= 11;
-    }
-
-    function isValidContract(data) {
-      return data.clientId is string &&
-             data.totalAmount is number && data.totalAmount > 0 &&
-             data.installmentsCount is int && data.installmentsCount > 0 &&
-             data.status in ['active', 'completed', 'cancelled'];
-    }
-
-    function isValidInstallment(data) {
-      return data.contractId is string &&
-             data.number is int && data.number > 0 &&
-             data.amount is number && data.amount > 0 &&
-             data.status in ['pending', 'paid', 'overdue'];
-    }
-
+    // ── Coleções globais antigas (legado) ────────────────────────────────────
+    // Mantidas para não quebrar dados existentes, mas sem acesso de escrita.
     match /clients/{clientId} {
-      allow read: if true;
-      allow write: if isAuthenticated() && isValidClient(request.resource.data);
+      allow read: if request.auth != null;
+      allow write: if false; // bloqueado — use /users/{uid}/clients
     }
 
     match /contracts/{contractId} {
-      allow read: if true;
-      allow write: if isAuthenticated() && isValidContract(request.resource.data);
+      allow read: if request.auth != null;
+      allow write: if false; // bloqueado — use /users/{uid}/contracts
     }
 
     match /installments/{installmentId} {
-      allow read: if true;
-      allow write: if isAuthenticated() && isValidInstallment(request.resource.data);
+      allow read: if request.auth != null;
+      allow write: if false; // bloqueado — use /users/{uid}/installments
     }
   }
 }
