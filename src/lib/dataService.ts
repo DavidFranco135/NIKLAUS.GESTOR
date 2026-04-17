@@ -402,6 +402,18 @@ class DataService {
   getContracts() { return this.contracts; }
   getInstallments() { return this.installments; }
 
+  // ─── Contract Update ──────────────────────────────────────────────────────────
+
+  async updateContract(id: string, data: Partial<Pick<Contract, 'description' | 'status' | 'lateInterestRate' | 'interestType' | 'clientId'>>) {
+    this.contracts = this.contracts.map(c => c.id === id ? { ...c, ...data } : c);
+    this.notify();
+    const user = await this.getCurrentUser();
+    if (user) {
+      try { await updateDoc(doc(db, 'users', user.uid, 'contracts', id), data as any); }
+      catch (e) { console.error('[updateContract]', e); }
+    }
+  }
+
   // ─── Client CRUD ─────────────────────────────────────────────────────────────
 
   async addClient(client: Omit<Client, 'id'>) {
