@@ -103,7 +103,6 @@ class DataService {
   private contracts: Contract[] = [];
   private installments: Installment[] = [];
   private listeners: (() => void)[] = [];
-  private isFirebaseAccessible = true;
 
   constructor() {
     this.loadFromLocal();
@@ -222,36 +221,35 @@ class DataService {
   }
 
   private initFirebase() {
-  this.testConnection();
-  
-  // Não deixe erros de READ desativar os WRITES
-  onSnapshot(collection(db, 'clients'), s => {
-    this.clients = s.docs.map(d => ({ id: d.id, ...d.data() } as Client));
-    this.notify();
-  }, e => console.warn('[Firebase] clients read:', e.message));
+    this.testConnection();
 
-  onSnapshot(collection(db, 'contracts'), s => {
-    this.contracts = s.docs.map(d => ({ id: d.id, ...d.data() } as Contract));
-    this.notify();
-  }, e => console.warn('[Firebase] contracts read:', e.message));
+    // Erros de READ não desativam os WRITEs — cada coleção é independente
+    onSnapshot(
+      collection(db, 'clients'),
+      s => {
+        this.clients = s.docs.map(d => ({ id: d.id, ...d.data() } as Client));
+        this.notify();
+      },
+      e => console.warn('[Firebase] clients read error:', e.message),
+    );
 
-  onSnapshot(collection(db, 'installments'), s => {
-    this.installments = s.docs.map(d => ({ id: d.id, ...d.data() } as Installment));
-    this.notify();
-  }, e => console.warn('[Firebase] installments read:', e.message));
+    onSnapshot(
+      collection(db, 'contracts'),
+      s => {
+        this.contracts = s.docs.map(d => ({ id: d.id, ...d.data() } as Contract));
+        this.notify();
+      },
+      e => console.warn('[Firebase] contracts read error:', e.message),
+    );
 
-    onSnapshot(collection(db, 'clients'), s => {
-      this.clients = s.docs.map(d => ({ id: d.id, ...d.data() } as Client));
-      this.notify();
-    }, e => handleError(e, 'clients'));
-    onSnapshot(collection(db, 'contracts'), s => {
-      this.contracts = s.docs.map(d => ({ id: d.id, ...d.data() } as Contract));
-      this.notify();
-    }, e => handleError(e, 'contracts'));
-    onSnapshot(collection(db, 'installments'), s => {
-      this.installments = s.docs.map(d => ({ id: d.id, ...d.data() } as Installment));
-      this.notify();
-    }, e => handleError(e, 'installments'));
+    onSnapshot(
+      collection(db, 'installments'),
+      s => {
+        this.installments = s.docs.map(d => ({ id: d.id, ...d.data() } as Installment));
+        this.notify();
+      },
+      e => console.warn('[Firebase] installments read error:', e.message),
+    );
   }
 
   private async testConnection() {
@@ -288,44 +286,50 @@ class DataService {
 
   // ─── Client CRUD ─────────────────────────────────────────────────────────────
 
- async addClient(client: Omit<Client, 'id'>) {
-  const user = auth.currentUser;
-  if (!user) {
-    // fallback local se não autenticado
-    const nc = { ...client, id: `cl-${Date.now()}` };
-    this.clients.push(nc); this.notify(); return nc;
+  async addClient(client: Omit<Client, 'id'>) {
+    const user = auth.currentUser;
+
+    if (!user) {
+      // Usuário não autenticado — salva apenas localmente
+      console.warn('[addClient] Usuário não autenticado. Salvando localmente.');
+      const nc = { ...client, id: `cl-${Date.now()}` };
+      this.clients.push(nc);
+      this.notify();
+      return nc;
+    }
+
+    try {
+      const ref = await addDoc(collection(db, 'clients'), client);
+      return { ...client, id: ref.id };
+    } catch (e) {
+      console.error('[addClient]', e);
+      // Fallback local em caso de erro no Firebase
+      const nc = { ...client, id: `cl-${Date.now()}` };
+      this.clients.push(nc);
+      this.notify();
+      return nc;
+    }
   }
-  try {
-    const ref = await addDoc(collection(db, 'clients'), client);
-    return { ...client, id: ref.id };
-  } catch (e) {
-    console.error('[addClient]', e);
-    const nc = { ...client, id: `cl-${Date.now()}` };
-    this.clients.push(nc); this.notify(); return nc;
-  }
-}
 
   async updateClient(id: string, data: Partial<Client>) {
     this.clients = this.clients.map(c => c.id === id ? { ...c, ...data } : c);
     this.notify();
-    if (this.isFirebaseAccessible) {
+    if (auth.currentUser) {
       try { await updateDoc(doc(db, 'clients', id), data as any); } catch (e) { console.error('[updateClient]', e); }
     }
   }
 
   async deleteClient(id: string) {
-    // Delete related contracts + installments
     const contractIds = this.contracts.filter(c => c.clientId === id).map(c => c.id);
     this.installments = this.installments.filter(i => !contractIds.includes(i.contractId));
     this.contracts = this.contracts.filter(c => c.clientId !== id);
     this.clients = this.clients.filter(c => c.id !== id);
     this.notify();
-    if (this.isFirebaseAccessible) {
+    if (auth.currentUser) {
       try {
         await deleteDoc(doc(db, 'clients', id));
         for (const cid of contractIds) {
           await deleteDoc(doc(db, 'contracts', cid));
-          // Firebase installments deletion would require a query; handled locally
         }
       } catch (e) { console.error('[deleteClient]', e); }
     }
@@ -336,8 +340,10 @@ class DataService {
   async addContract(contract: Omit<Contract, 'id'>) {
     const installmentAmount = parseFloat((contract.totalAmount / contract.installmentsCount).toFixed(2));
     const baseDate = new Date(contract.firstPaymentDate + 'T00:00:00');
+    const user = auth.currentUser;
 
-    if (!this.isFirebaseAccessible) {
+    if (!user) {
+      console.warn('[addContract] Usuário não autenticado. Salvando localmente.');
       const nc = { ...contract, id: `c-${Date.now()}` };
       this.contracts.push(nc);
       for (let i = 0; i < contract.installmentsCount; i++) {
@@ -347,7 +353,8 @@ class DataService {
           dueDate: format(addMonths(baseDate, i), 'yyyy-MM-dd'), status: 'pending',
         });
       }
-      this.notify(); return nc;
+      this.notify();
+      return nc;
     }
 
     try {
@@ -373,7 +380,8 @@ class DataService {
           dueDate: format(addMonths(baseDate, i), 'yyyy-MM-dd'), status: 'pending',
         });
       }
-      this.notify(); return nc;
+      this.notify();
+      return nc;
     }
   }
 
@@ -381,7 +389,7 @@ class DataService {
     this.installments = this.installments.filter(i => i.contractId !== id);
     this.contracts = this.contracts.filter(c => c.id !== id);
     this.notify();
-    if (this.isFirebaseAccessible) {
+    if (auth.currentUser) {
       try { await deleteDoc(doc(db, 'contracts', id)); } catch (e) { console.error('[deleteContract]', e); }
     }
   }
@@ -394,10 +402,9 @@ class DataService {
       i.id === id ? { ...i, status: 'paid', paidAt } : i,
     );
     this.notify();
-    if (this.isFirebaseAccessible) {
+    if (auth.currentUser) {
       try { await updateDoc(doc(db, 'installments', id), { status: 'paid', paidAt }); } catch (e) { console.error('[markPaid]', e); }
     }
-    // Check if all installments of the contract are paid
     const inst = this.installments.find(i => i.id === id);
     if (inst) {
       const siblings = this.installments.filter(i => i.contractId === inst.contractId);
@@ -412,7 +419,7 @@ class DataService {
       i.id === id ? { ...i, status: 'pending', paidAt: undefined } : i,
     );
     this.notify();
-    if (this.isFirebaseAccessible) {
+    if (auth.currentUser) {
       try { await updateDoc(doc(db, 'installments', id), { status: 'pending', paidAt: null }); } catch (e) { console.error('[markPending]', e); }
     }
   }
@@ -420,7 +427,7 @@ class DataService {
   private async updateContractStatus(id: string, status: Contract['status']) {
     this.contracts = this.contracts.map(c => c.id === id ? { ...c, status } : c);
     this.notify();
-    if (this.isFirebaseAccessible) {
+    if (auth.currentUser) {
       try { await updateDoc(doc(db, 'contracts', id), { status }); } catch (e) { console.error('[updateContractStatus]', e); }
     }
   }
