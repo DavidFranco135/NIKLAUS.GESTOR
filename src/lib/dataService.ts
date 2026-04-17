@@ -477,8 +477,24 @@ class DataService {
 
   // ─── Contract CRUD ───────────────────────────────────────────────────────────
 
+  // ─── Geração de valores das parcelas com correção de arredondamento ──────────
+  // Evita erro de centavo: 1000 / 300 = 3,333... → 299x R$3,33 + 1x R$3,43
+  private buildInstallmentAmounts(total: number, count: number): number[] {
+    const base = parseFloat((total / count).toFixed(2));
+    const amounts: number[] = [];
+    let sum = 0;
+    for (let i = 0; i < count - 1; i++) {
+      amounts.push(base);
+      sum = parseFloat((sum + base).toFixed(2));
+    }
+    // Última parcela corrige o arredondamento para fechar o total exato
+    const last = parseFloat((total - sum).toFixed(2));
+    amounts.push(last > 0 ? last : base);
+    return amounts;
+  }
+
   async addContract(contract: Omit<Contract, 'id'>) {
-    const installmentAmount = parseFloat((contract.totalAmount / contract.installmentsCount).toFixed(2));
+    const amounts = this.buildInstallmentAmounts(contract.totalAmount, contract.installmentsCount);
     const baseDate = new Date(contract.firstPaymentDate + 'T00:00:00');
     const billingType = contract.billingType ?? 'monthly';
     const skip = contract.skipNonBusinessDays ?? false;
@@ -490,7 +506,7 @@ class DataService {
       for (let i = 0; i < contract.installmentsCount; i++) {
         this.installments.push({
           id: `i-${Date.now()}-${i}`,
-          contractId: nc.id, number: i + 1, amount: installmentAmount,
+          contractId: nc.id, number: i + 1, amount: amounts[i],
           dueDate: this.getDueDate(baseDate, i, billingType, skip), status: 'pending',
         });
       }
@@ -504,7 +520,7 @@ class DataService {
       for (let i = 0; i < contract.installmentsCount; i++) {
         const iRef = doc(collection(db, 'users', user.uid, 'installments'));
         batch.set(iRef, {
-          contractId: cRef.id, number: i + 1, amount: installmentAmount,
+          contractId: cRef.id, number: i + 1, amount: amounts[i],
           dueDate: this.getDueDate(baseDate, i, billingType, skip), status: 'pending',
         });
       }
@@ -517,7 +533,7 @@ class DataService {
       for (let i = 0; i < contract.installmentsCount; i++) {
         this.installments.push({
           id: `i-${Date.now()}-${i}`,
-          contractId: nc.id, number: i + 1, amount: installmentAmount,
+          contractId: nc.id, number: i + 1, amount: amounts[i],
           dueDate: this.getDueDate(baseDate, i, billingType, skip), status: 'pending',
         });
       }
@@ -613,7 +629,11 @@ class DataService {
     const enriched = this.getEnrichedInstallments();
     const activeContracts = this.contracts.filter(c => c.status === 'active').length;
 
-    const totalValue    = enriched.reduce((a, i) => a + i.amount, 0);
+    // totalValue usa o valor dos contratos diretamente — evita acúmulo de erros de arredondamento
+    const totalValue    = this.contracts
+      .filter(c => c.status !== 'cancelled')
+      .reduce((a, c) => a + c.totalAmount, 0);
+
     const received      = enriched.filter(i => i.status === 'paid').reduce((a, i) => a + i.amount, 0);
     const overdueItems  = enriched.filter(i => i.status === 'overdue');
     const overdue       = overdueItems.reduce((a, i) => a + i.totalDue, 0);
@@ -625,8 +645,20 @@ class DataService {
       .filter(i => i.status === 'paid')
       .reduce((a, i) => a + (i.interestPaid ?? 0), 0);
 
-    // Juros acumulado atual nas parcelas em atraso (ainda não recebido)
+    // Juros acumulado atual nas parcelas EM ATRASO (já vencidas, não pagas)
     const interestPending = overdueItems.reduce((a, i) => a + i.computedInterest, 0);
+
+    // Juros projetado: quanto SERIA cobrado se cada parcela pendente ficasse 1 dia em atraso
+    // Serve como indicativo da taxa configurada, mesmo sem atraso atual
+    const projectedInterest = this.contracts
+      .filter(c => c.status === 'active' && (c.lateInterestRate ?? 0) > 0)
+      .reduce((acc, c) => {
+        const cInsts = this.installments.filter(i => i.contractId === c.id && i.status === 'pending');
+        const principal = cInsts.reduce((s, i) => s + i.amount, 0);
+        // Projeção para 30 dias de atraso como referência
+        const proj = this.calculateInterest(principal, 30, c.lateInterestRate, c.interestType ?? 'compound');
+        return acc + proj;
+      }, 0);
 
     // Total de juros = recebido + pendente em atraso
     const totalInterest = parseFloat((interestReceived + interestPending).toFixed(2));
@@ -634,6 +666,7 @@ class DataService {
     return {
       activeContracts, totalValue, received, overdue, open,
       pending, totalInterest, interestReceived, interestPending,
+      projectedInterest,
       totalClients: this.clients.length,
       overdueCount: overdueItems.length,
     };
