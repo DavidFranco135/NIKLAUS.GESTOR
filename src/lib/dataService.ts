@@ -355,7 +355,7 @@ class DataService {
         this.clients = s.docs.map(d => ({ id: d.id, ...d.data() } as Client));
         this.notify();
       },
-      e => console.warn('[Firebase] clients read error:', e.message),
+      e => console.error('[Firebase] clients error — verifique as regras do Firestore:', e.code, e.message),
     );
 
     const unsub2 = onSnapshot(
@@ -364,7 +364,7 @@ class DataService {
         this.contracts = s.docs.map(d => ({ id: d.id, ...d.data() } as Contract));
         this.notify();
       },
-      e => console.warn('[Firebase] contracts read error:', e.message),
+      e => console.error('[Firebase] contracts error — verifique as regras do Firestore:', e.code, e.message),
     );
 
     const unsub3 = onSnapshot(
@@ -373,7 +373,7 @@ class DataService {
         this.installments = s.docs.map(d => ({ id: d.id, ...d.data() } as Installment));
         this.notify();
       },
-      e => console.warn('[Firebase] installments read error:', e.message),
+      e => console.error('[Firebase] installments error — verifique as regras do Firestore:', e.code, e.message),
     );
 
     this.unsubFirebase = [unsub1, unsub2, unsub3];
