@@ -75,7 +75,7 @@ export interface Contract {
   firstPaymentDate: string;
   startDate: string;
   status: 'active' | 'completed' | 'cancelled';
-  lateInterestRate: number; // % por dia (override; 0 = usa config global)
+  lateInterestRate: number;
 }
 
 export interface Client {
@@ -163,6 +163,23 @@ class DataService {
     this.notify();
   }
 
+  // ─── Auth helper ─────────────────────────────────────────────────────────────
+
+  // Aguarda o Firebase resolver a sessão antes de retornar o usuário.
+  // Resolve o problema de auth.currentUser === null nos primeiros ms após carregamento.
+  private getCurrentUser() {
+    return new Promise<typeof auth.currentUser>(resolve => {
+      if (auth.currentUser !== null) {
+        resolve(auth.currentUser);
+        return;
+      }
+      const unsubscribe = auth.onAuthStateChanged(user => {
+        unsubscribe();
+        resolve(user);
+      });
+    });
+  }
+
   // ─── Compound Interest ───────────────────────────────────────────────────────
 
   calculateCompoundInterest(
@@ -223,7 +240,6 @@ class DataService {
   private initFirebase() {
     this.testConnection();
 
-    // Erros de READ não desativam os WRITEs — cada coleção é independente
     onSnapshot(
       collection(db, 'clients'),
       s => {
@@ -287,10 +303,9 @@ class DataService {
   // ─── Client CRUD ─────────────────────────────────────────────────────────────
 
   async addClient(client: Omit<Client, 'id'>) {
-    const user = auth.currentUser;
+    const user = await this.getCurrentUser();
 
     if (!user) {
-      // Usuário não autenticado — salva apenas localmente
       console.warn('[addClient] Usuário não autenticado. Salvando localmente.');
       const nc = { ...client, id: `cl-${Date.now()}` };
       this.clients.push(nc);
@@ -303,7 +318,6 @@ class DataService {
       return { ...client, id: ref.id };
     } catch (e) {
       console.error('[addClient]', e);
-      // Fallback local em caso de erro no Firebase
       const nc = { ...client, id: `cl-${Date.now()}` };
       this.clients.push(nc);
       this.notify();
@@ -314,7 +328,8 @@ class DataService {
   async updateClient(id: string, data: Partial<Client>) {
     this.clients = this.clients.map(c => c.id === id ? { ...c, ...data } : c);
     this.notify();
-    if (auth.currentUser) {
+    const user = await this.getCurrentUser();
+    if (user) {
       try { await updateDoc(doc(db, 'clients', id), data as any); } catch (e) { console.error('[updateClient]', e); }
     }
   }
@@ -325,7 +340,8 @@ class DataService {
     this.contracts = this.contracts.filter(c => c.clientId !== id);
     this.clients = this.clients.filter(c => c.id !== id);
     this.notify();
-    if (auth.currentUser) {
+    const user = await this.getCurrentUser();
+    if (user) {
       try {
         await deleteDoc(doc(db, 'clients', id));
         for (const cid of contractIds) {
@@ -340,7 +356,7 @@ class DataService {
   async addContract(contract: Omit<Contract, 'id'>) {
     const installmentAmount = parseFloat((contract.totalAmount / contract.installmentsCount).toFixed(2));
     const baseDate = new Date(contract.firstPaymentDate + 'T00:00:00');
-    const user = auth.currentUser;
+    const user = await this.getCurrentUser();
 
     if (!user) {
       console.warn('[addContract] Usuário não autenticado. Salvando localmente.');
@@ -389,7 +405,8 @@ class DataService {
     this.installments = this.installments.filter(i => i.contractId !== id);
     this.contracts = this.contracts.filter(c => c.id !== id);
     this.notify();
-    if (auth.currentUser) {
+    const user = await this.getCurrentUser();
+    if (user) {
       try { await deleteDoc(doc(db, 'contracts', id)); } catch (e) { console.error('[deleteContract]', e); }
     }
   }
@@ -402,7 +419,8 @@ class DataService {
       i.id === id ? { ...i, status: 'paid', paidAt } : i,
     );
     this.notify();
-    if (auth.currentUser) {
+    const user = await this.getCurrentUser();
+    if (user) {
       try { await updateDoc(doc(db, 'installments', id), { status: 'paid', paidAt }); } catch (e) { console.error('[markPaid]', e); }
     }
     const inst = this.installments.find(i => i.id === id);
@@ -419,7 +437,8 @@ class DataService {
       i.id === id ? { ...i, status: 'pending', paidAt: undefined } : i,
     );
     this.notify();
-    if (auth.currentUser) {
+    const user = await this.getCurrentUser();
+    if (user) {
       try { await updateDoc(doc(db, 'installments', id), { status: 'pending', paidAt: null }); } catch (e) { console.error('[markPending]', e); }
     }
   }
@@ -427,7 +446,8 @@ class DataService {
   private async updateContractStatus(id: string, status: Contract['status']) {
     this.contracts = this.contracts.map(c => c.id === id ? { ...c, status } : c);
     this.notify();
-    if (auth.currentUser) {
+    const user = await this.getCurrentUser();
+    if (user) {
       try { await updateDoc(doc(db, 'contracts', id), { status }); } catch (e) { console.error('[updateContractStatus]', e); }
     }
   }
