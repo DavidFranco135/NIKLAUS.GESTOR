@@ -623,6 +623,27 @@ class DataService {
     }
   }
 
+  // ─── Juros Projetados por período ────────────────────────────────────────────
+  // Calcula quanto de juros seria cobrado se as parcelas pendentes
+  // ficassem em atraso pelo número de dias informado.
+  getProjectedInterest(days: number): number {
+    return parseFloat(
+      this.contracts
+        .filter(c => c.status === 'active' && (c.lateInterestRate ?? 0) > 0)
+        .reduce((acc, c) => {
+          const pendingInsts = this.installments.filter(
+            i => i.contractId === c.id && i.status === 'pending',
+          );
+          const principal = pendingInsts.reduce((s, i) => s + i.amount, 0);
+          if (principal <= 0) return acc;
+          return acc + this.calculateInterest(
+            principal, days, c.lateInterestRate, c.interestType ?? 'compound',
+          );
+        }, 0)
+        .toFixed(2),
+    );
+  }
+
   // ─── Stats ───────────────────────────────────────────────────────────────────
 
   getStats() {
@@ -630,43 +651,43 @@ class DataService {
     const activeContracts = this.contracts.filter(c => c.status === 'active').length;
 
     // totalValue usa o valor dos contratos diretamente — evita acúmulo de erros de arredondamento
-    const totalValue    = this.contracts
+    const totalValue = this.contracts
       .filter(c => c.status !== 'cancelled')
       .reduce((a, c) => a + c.totalAmount, 0);
 
-    const received      = enriched.filter(i => i.status === 'paid').reduce((a, i) => a + i.amount, 0);
-    const overdueItems  = enriched.filter(i => i.status === 'overdue');
-    const overdue       = overdueItems.reduce((a, i) => a + i.totalDue, 0);
-    const pending       = enriched.filter(i => i.status === 'pending').reduce((a, i) => a + i.amount, 0);
-    const open          = pending + overdue;
+    const received     = enriched.filter(i => i.status === 'paid').reduce((a, i) => a + i.amount, 0);
+    const overdueItems = enriched.filter(i => i.status === 'overdue');
+    const overdue      = overdueItems.reduce((a, i) => a + i.totalDue, 0);
+    const pending      = enriched.filter(i => i.status === 'pending').reduce((a, i) => a + i.amount, 0);
+    const open         = pending + overdue;
 
-    // Juros efetivamente cobrado nas parcelas pagas (salvo no campo interestPaid)
+    // Juros efetivamente cobrado nas parcelas pagas (campo interestPaid)
     const interestReceived = this.installments
       .filter(i => i.status === 'paid')
       .reduce((a, i) => a + (i.interestPaid ?? 0), 0);
 
-    // Juros acumulado atual nas parcelas EM ATRASO (já vencidas, não pagas)
+    // Juros acumulado atual nas parcelas EM ATRASO
     const interestPending = overdueItems.reduce((a, i) => a + i.computedInterest, 0);
 
-    // Juros projetado: quanto SERIA cobrado se cada parcela pendente ficasse 1 dia em atraso
-    // Serve como indicativo da taxa configurada, mesmo sem atraso atual
-    const projectedInterest = this.contracts
-      .filter(c => c.status === 'active' && (c.lateInterestRate ?? 0) > 0)
-      .reduce((acc, c) => {
-        const cInsts = this.installments.filter(i => i.contractId === c.id && i.status === 'pending');
-        const principal = cInsts.reduce((s, i) => s + i.amount, 0);
-        // Projeção para 30 dias de atraso como referência
-        const proj = this.calculateInterest(principal, 30, c.lateInterestRate, c.interestType ?? 'compound');
-        return acc + proj;
-      }, 0);
-
-    // Total de juros = recebido + pendente em atraso
+    // Total de juros = recebido + em atraso
     const totalInterest = parseFloat((interestReceived + interestPending).toFixed(2));
+
+    // Projeções por período (calculadas uma única vez aqui para performance)
+    const projected = {
+      day1:   this.getProjectedInterest(1),
+      day7:   this.getProjectedInterest(7),
+      day30:  this.getProjectedInterest(30),
+      day90:  this.getProjectedInterest(90),
+      day180: this.getProjectedInterest(180),
+      day365: this.getProjectedInterest(365),
+    };
 
     return {
       activeContracts, totalValue, received, overdue, open,
       pending, totalInterest, interestReceived, interestPending,
-      projectedInterest,
+      projected,
+      // compat
+      projectedInterest: projected.day30,
       totalClients: this.clients.length,
       overdueCount: overdueItems.length,
     };
