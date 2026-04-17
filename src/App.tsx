@@ -16,6 +16,7 @@ import { auth } from './firebase';
 import {
   onAuthStateChanged, signInWithPopup, GoogleAuthProvider, signOut,
   createUserWithEmailAndPassword, signInWithEmailAndPassword, sendPasswordResetEmail,
+  fetchSignInMethodsForEmail,
 } from 'firebase/auth';
 import {
   dataService, Client, Contract, Installment, EnrichedInstallment,
@@ -175,8 +176,12 @@ const ContractForm = ({ clients, onSave, onClose }: { clients: Client[]; onSave:
     applyInterestOnValue: false,
     interestOnValueRate: '0',
     applyLateInterest: true,
+    interestType: 'compound' as 'compound' | 'simple',
+    // Campo auxiliar para entrada em meses (não é salvo no contrato diretamente)
+    durationMonths: '',
   });
   const set = (k: string) => (e: any) => setForm(f => ({ ...f, [k]: e.target.value }));
+
   const amount = parseFloat(form.totalAmount) || 0;
   const count = parseInt(form.installmentsCount) || 1;
   const interestRate = parseFloat(form.interestOnValueRate) || 0;
@@ -184,15 +189,62 @@ const ContractForm = ({ clients, onSave, onClose }: { clients: Client[]; onSave:
   const interestPerInstall = form.applyInterestOnValue ? baseInstall * (interestRate / 100) : 0;
   const installAmt = (baseInstall + interestPerInstall).toFixed(2);
 
+  // Converte duração em meses → número de parcelas conforme tipo de cobrança
+  const monthsToInstallments = (months: number): number => {
+    switch (form.billingType) {
+      case 'daily':     return months * 30;
+      case 'weekly':    return months * 4;
+      case 'biweekly':  return months * 2;
+      case 'monthly':
+      default:          return months;
+    }
+  };
+
+  const handleMonthsChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const months = parseInt(e.target.value) || 0;
+    setForm(f => ({
+      ...f,
+      durationMonths: e.target.value,
+      installmentsCount: months > 0 ? String(monthsToInstallments(months)) : f.installmentsCount,
+    }));
+  };
+
+  // Prévia das primeiras datas de vencimento
+  const previewDates = () => {
+    if (!form.firstPaymentDate) return [];
+    const base = new Date(form.firstPaymentDate + 'T00:00:00');
+    const billingIntervals: Record<string, number> = { daily: 1, weekly: 7, biweekly: 15, monthly: 0 };
+    const result = [];
+    for (let i = 0; i < Math.min(3, count); i++) {
+      let d: Date;
+      if (form.billingType === 'monthly') {
+        d = new Date(base.getFullYear(), base.getMonth() + i, base.getDate());
+      } else {
+        d = new Date(base.getTime() + i * billingIntervals[form.billingType] * 86400000);
+      }
+      if (form.skipNonBusinessDays) {
+        while (d.getDay() === 0 || d.getDay() === 6) d = new Date(d.getTime() + 86400000);
+      }
+      result.push(format(d, 'dd/MM/yyyy'));
+    }
+    return result;
+  };
+
   return (
     <form className="space-y-4" onSubmit={e => {
       e.preventDefault();
       onSave({
-        ...form,
+        clientId: form.clientId,
+        description: form.description,
         totalAmount: amount,
         installmentsCount: count,
+        firstPaymentDate: form.firstPaymentDate,
+        startDate: form.startDate,
         lateInterestRate: form.applyLateInterest ? (parseFloat(form.lateInterestRate) || 0) : 0,
         interestOnValueRate: form.applyInterestOnValue ? interestRate : 0,
+        billingType: form.billingType,
+        skipNonBusinessDays: form.skipNonBusinessDays,
+        interestType: form.interestType,
         status: 'active',
       });
     }}>
@@ -203,34 +255,45 @@ const ContractForm = ({ clients, onSave, onClose }: { clients: Client[]; onSave:
         </Select>
       </Field>
       <Field label="Descrição">
-        <Input value={form.description} onChange={set('description')} placeholder="Ex: Serviço de consultoria" />
+        <Input value={form.description} onChange={set('description')} placeholder="Ex: Empréstimo pessoal" />
       </Field>
 
+      {/* Tipo de Cobrança */}
       <div>
-        <label className="block text-[11px] font-medium text-text-dim uppercase tracking-wider mb-2">Tipo de Cobrança</label>
+        <label className="block text-[11px] font-medium text-text-dim uppercase tracking-wider mb-2">Periodicidade das Parcelas</label>
         <div className="grid grid-cols-4 gap-2">
           {BILLING_TYPES.map(bt => (
-            <button key={bt.id} type="button" onClick={() => setForm(f => ({ ...f, billingType: bt.id }))}
+            <button key={bt.id} type="button"
+              onClick={() => setForm(f => ({ ...f, billingType: bt.id, durationMonths: '' }))}
               className={`py-2 rounded-lg text-xs font-semibold border transition-all ${form.billingType === bt.id ? 'bg-accent text-bg border-accent' : 'bg-bg border-border text-text-dim hover:border-accent/40'}`}>
               {bt.label}
             </button>
           ))}
         </div>
+        <p className="text-[10px] text-text-dim mt-1.5">
+          {form.billingType === 'monthly' && 'Parcelas no mesmo dia a cada mês (ex: dia 10 de cada mês)'}
+          {form.billingType === 'biweekly' && 'Parcelas a cada 15 dias corridos (quinzenal)'}
+          {form.billingType === 'weekly' && 'Parcelas a cada 7 dias corridos (semanal)'}
+          {form.billingType === 'daily' && 'Parcelas a cada 1 dia corrido (diária)'}
+        </p>
         <div className="mt-2">
-          <Toggle checked={form.skipNonBusinessDays} onChange={v => setForm(f => ({ ...f, skipNonBusinessDays: v }))} label="Pular dias não úteis — Escolha quais dias pular nas cobranças" />
+          <Toggle checked={form.skipNonBusinessDays} onChange={v => setForm(f => ({ ...f, skipNonBusinessDays: v }))}
+            label="Pular fins de semana e feriados nacionais — avança para o próximo dia útil" />
         </div>
       </div>
 
+      {/* Valores */}
       <div>
         <label className="block text-[11px] font-medium text-text-dim uppercase tracking-wider mb-2">Valores</label>
-        <Field label="Valor Total (R$) *">
+        <Field label="Valor Total do Empréstimo (R$) *">
           <Input required type="number" min="0.01" step="0.01" value={form.totalAmount} onChange={set('totalAmount')} placeholder="0,00" />
         </Field>
         <div className="mt-3 space-y-2">
-          <Toggle checked={form.applyInterestOnValue} onChange={v => setForm(f => ({ ...f, applyInterestOnValue: v }))} label="Adicionar Juros — Aplicar juros sobre o valor" />
+          <Toggle checked={form.applyInterestOnValue} onChange={v => setForm(f => ({ ...f, applyInterestOnValue: v }))}
+            label="Adicionar Juros sobre o Valor — aplicar na geração das parcelas" />
           {form.applyInterestOnValue && (
             <div className="pl-3 border-l-2 border-accent/30">
-              <Field label="Taxa de Juros (% sobre o valor)">
+              <Field label="Taxa de Juros (% sobre o valor total)">
                 <Input type="number" min="0" step="0.01" value={form.interestOnValueRate} onChange={set('interestOnValueRate')} placeholder="0.00" />
               </Field>
             </div>
@@ -238,33 +301,104 @@ const ContractForm = ({ clients, onSave, onClose }: { clients: Client[]; onSave:
         </div>
       </div>
 
-      <Field label="Nº de Parcelas *">
-        <Input required type="number" min="1" max="360" value={form.installmentsCount} onChange={set('installmentsCount')} />
-      </Field>
+      {/* Nº de Parcelas + Duração em Meses */}
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Nº de Parcelas *">
+          <Input required type="number" min="1" max="9999" value={form.installmentsCount} onChange={set('installmentsCount')} />
+        </Field>
+        <Field label={`Duração em Meses ${form.billingType !== 'monthly' ? '(aprox.)' : ''}`}>
+          <Input
+            type="number" min="1" max="360"
+            value={form.durationMonths}
+            onChange={handleMonthsChange}
+            placeholder={form.billingType === 'monthly' ? 'Ex: 12' : 'Ex: 6'}
+          />
+          <p className="text-[10px] text-text-dim mt-1">
+            {form.billingType === 'monthly' && '1 mês = 1 parcela mensal'}
+            {form.billingType === 'biweekly' && '1 mês ≈ 2 parcelas quinzenais'}
+            {form.billingType === 'weekly' && '1 mês ≈ 4 parcelas semanais'}
+            {form.billingType === 'daily' && '1 mês ≈ 30 parcelas diárias'}
+          </p>
+        </Field>
+      </div>
 
+      {/* Juros por Atraso */}
       <div>
         <label className="block text-[11px] font-medium text-text-dim uppercase tracking-wider mb-2">Juros por Atraso</label>
-        <Toggle checked={form.applyLateInterest} onChange={v => setForm(f => ({ ...f, applyLateInterest: v }))} label="Cobrar juros por dia de atraso no pagamento" />
+        <Toggle checked={form.applyLateInterest} onChange={v => setForm(f => ({ ...f, applyLateInterest: v }))}
+          label="Cobrar juros por dia de atraso no pagamento" />
         {form.applyLateInterest && (
-          <div className="mt-2 pl-3 border-l-2 border-danger/30">
-            <Field label="Taxa de Juros/dia (%)">
-              <Input required type="number" min="0" step="0.01" value={form.lateInterestRate} onChange={set('lateInterestRate')} />
-            </Field>
+          <div className="mt-2 space-y-2">
+            <div className="pl-3 border-l-2 border-danger/30 space-y-2">
+              <Field label="Taxa de Juros/dia (%)">
+                <Input required type="number" min="0" step="0.01" value={form.lateInterestRate} onChange={set('lateInterestRate')} />
+              </Field>
+            </div>
+            {/* Tipo de juros */}
+            <div>
+              <p className="text-[11px] font-medium text-text-dim uppercase tracking-wider mb-2">Modalidade dos Juros</p>
+              <div className="grid grid-cols-2 gap-2">
+                {([
+                  { id: 'compound', label: 'Composto', desc: 'Juros sobre juros — cresce exponencialmente. Padrão bancário.' },
+                  { id: 'simple', label: 'Simples', desc: 'Juros sobre o principal apenas — cresce linearmente.' },
+                ] as const).map(opt => (
+                  <button key={opt.id} type="button"
+                    onClick={() => setForm(f => ({ ...f, interestType: opt.id }))}
+                    className={`p-3 rounded-lg text-left border transition-all ${form.interestType === opt.id ? 'bg-accent/10 border-accent text-accent' : 'bg-bg border-border text-text-dim hover:border-accent/40'}`}>
+                    <div className="font-bold text-xs">{opt.label}</div>
+                    <div className="text-[10px] opacity-70 mt-0.5 leading-tight">{opt.desc}</div>
+                  </button>
+                ))}
+              </div>
+              {/* Simulação de juros */}
+              {amount > 0 && parseFloat(form.lateInterestRate) > 0 && (
+                <div className="mt-2 bg-bg border border-border rounded-lg p-3 text-[10px] text-text-dim space-y-1">
+                  <p className="font-bold text-text-dim uppercase tracking-wider mb-1">Simulação de atraso sobre 1 parcela (R$ {installAmt})</p>
+                  {[7, 15, 30].map(days => {
+                    const p = parseFloat(installAmt);
+                    const r = parseFloat(form.lateInterestRate) / 100;
+                    const interest = form.interestType === 'simple'
+                      ? p * r * days
+                      : p * (Math.pow(1 + r, days) - 1);
+                    return (
+                      <div key={days} className="flex justify-between">
+                        <span>{days} dias de atraso</span>
+                        <span className="text-danger font-mono">+R$ {interest.toFixed(2)} → Total R$ {(p + interest).toFixed(2)}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>
 
+      {/* Datas */}
       <div>
         <label className="block text-[11px] font-medium text-text-dim uppercase tracking-wider mb-2">Datas</label>
         <div className="space-y-3">
-          <Field label="Data de Início">
+          <Field label="Data de Início do Contrato">
             <Input type="date" value={form.startDate} onChange={set('startDate')} />
-            <p className="text-[10px] text-text-dim mt-1">Data de referência do contrato. Não afeta os vencimentos.</p>
           </Field>
-          <Field label="Primeira Data de Pagamento *">
+          <Field label="1ª Data de Vencimento *">
             <Input required type="date" value={form.firstPaymentDate} onChange={set('firstPaymentDate')} />
-            <p className="text-[10px] text-text-dim mt-1">Escolha a data do primeiro pagamento. As próximas parcelas serão no mesmo dia de cada mês.</p>
           </Field>
+          {/* Prévia dos vencimentos */}
+          {form.firstPaymentDate && count >= 1 && (
+            <div className="bg-accent/5 border border-accent/10 rounded-lg p-3 text-[10px]">
+              <p className="font-bold text-accent uppercase tracking-wider mb-1.5">Prévia dos primeiros vencimentos</p>
+              <div className="space-y-0.5">
+                {previewDates().map((d, i) => (
+                  <div key={i} className="flex gap-2 text-text-dim">
+                    <span className="text-accent/60">#{i + 1}</span>
+                    <span className="font-mono">{d}</span>
+                  </div>
+                ))}
+                {count > 3 && <div className="text-text-dim/50">...e mais {count - 3} parcela(s)</div>}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -282,11 +416,12 @@ const ContractForm = ({ clients, onSave, onClose }: { clients: Client[]; onSave:
         <div className="bg-accent/5 border border-accent/20 rounded-lg p-3 text-xs text-text-dim">
           <span className="text-accent font-bold">{count}x</span> de <span className="text-text-main font-bold">R$ {installAmt}</span>
           {form.applyInterestOnValue && <span className="ml-2 text-warning">· {interestRate}% juros sobre valor</span>}
-          {form.applyLateInterest && <span className="ml-2 text-text-dim">· {form.lateInterestRate}%/dia sobre atrasos</span>}
+          {form.applyLateInterest && <span className="ml-2 text-text-dim">· {form.lateInterestRate}%/dia ({form.interestType === 'compound' ? 'composto' : 'simples'})</span>}
+          <span className="ml-2 text-text-dim">· {form.billingType === 'monthly' ? 'mensal' : form.billingType === 'biweekly' ? 'quinzenal' : form.billingType === 'weekly' ? 'semanal' : 'diária'}</span>
         </div>
       )}
       <div className="flex gap-3 pt-2">
-        <Btn type="submit">Salvar</Btn>
+        <Btn type="submit">Salvar Contrato</Btn>
         <Btn type="button" variant="ghost" onClick={onClose}>Cancelar</Btn>
       </div>
     </form>
@@ -303,10 +438,32 @@ const DashboardView = ({ stats, revenueData, onNavigate }: any) => (
       <StatCard title="Pendente" value={`R$ ${fmt(stats.pending)}`} subValue="Aguardando pagamento" icon={Clock} color="bg-warning text-warning" onClick={() => onNavigate('due-dates', 'pending')} />
       <StatCard title="Em Atraso" value={`R$ ${fmt(stats.overdue)}`} subValue={`${stats.overdueCount} parcelas · R$ ${fmt(stats.totalInterest)} em juros`} icon={AlertCircle} color="bg-danger text-danger" trend={{ value: 0.2, positive: false }} onClick={() => onNavigate('due-dates', 'overdue')} />
     </div>
+
+    {/* Cards de juros */}
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      {[
+        { label: 'Juros Recebidos', value: `R$ ${fmt(stats.interestReceived)}`, color: 'text-accent', sub: 'Cobrado e pago', icon: CheckCircle2, filter: 'paid' },
+        { label: 'Juros em Atraso', value: `R$ ${fmt(stats.interestPending)}`, color: 'text-danger', sub: 'Acumulado nas atrasadas', icon: AlertCircle, filter: 'overdue' },
+        { label: 'Total de Juros', value: `R$ ${fmt(stats.totalInterest)}`, color: 'text-warning', sub: 'Recebidos + em atraso', icon: TrendingUp, filter: undefined },
+      ].map(s => (
+        <div key={s.label} className={`panel-card p-4 flex items-center gap-4 ${s.filter ? 'cursor-pointer hover:border-accent/40 transition-all' : ''}`} onClick={() => s.filter && onNavigate('due-dates', s.filter)}>
+          <div className="p-2 rounded-lg bg-white/5"><s.icon size={18} className={s.color} /></div>
+          <div>
+            <p className="text-[10px] text-text-dim uppercase tracking-widest font-medium">{s.label}</p>
+            <p className={`text-lg font-bold ${s.color}`}>{s.value}</p>
+            <p className="text-[10px] text-text-dim">{s.sub}</p>
+          </div>
+        </div>
+      ))}
+    </div>
+
+    {/* Painel de juros projetados por período */}
+    <ProjectedInterestPanel stats={stats} />
+
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
       <div className="lg:col-span-2 panel-card p-6">
         <div className="flex justify-between items-center mb-6">
-          <div><h3 className="text-base font-semibold">Desempenho de Receita</h3><p className="text-xs text-text-dim">Comparativo histórico — últimos 6 meses</p></div>
+          <div><h3 className="text-base font-semibold">Desempenho de Receita</h3><p className="text-xs text-text-dim">Últimos 6 meses — principal + juros recebidos</p></div>
         </div>
         <div className="h-[280px] w-full">
           <ResponsiveContainer width="100%" height="100%">
@@ -315,15 +472,31 @@ const DashboardView = ({ stats, revenueData, onNavigate }: any) => (
                 <linearGradient id="colorPrevisto" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="5%" stopColor="#10B981" stopOpacity={0.2} /><stop offset="95%" stopColor="#10B981" stopOpacity={0} />
                 </linearGradient>
+                <linearGradient id="colorJuros" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#F59E0B" stopOpacity={0.3} /><stop offset="95%" stopColor="#F59E0B" stopOpacity={0} />
+                </linearGradient>
               </defs>
               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#2D333E" strokeOpacity={0.5} />
               <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#94A3B8', fontSize: 10 }} dy={10} />
               <YAxis axisLine={false} tickLine={false} tick={{ fill: '#94A3B8', fontSize: 10 }} dx={-10} tickFormatter={v => `R$${v}`} />
-              <Tooltip contentStyle={{ backgroundColor: '#1C1F26', border: '1px solid #2D333E', borderRadius: '8px', fontSize: '12px' }} itemStyle={{ color: '#E2E8F0' }} />
-              <Area type="monotone" dataKey="previsto" stroke="#10B981" fillOpacity={1} fill="url(#colorPrevisto)" strokeWidth={2} />
-              <Area type="monotone" dataKey="receita" stroke="#10B981" fillOpacity={0} strokeWidth={2} strokeDasharray="4 4" opacity={0.5} />
+              <Tooltip contentStyle={{ backgroundColor: '#1C1F26', border: '1px solid #2D333E', borderRadius: '8px', fontSize: '12px' }} itemStyle={{ color: '#E2E8F0' }} formatter={(v: any, name: string) => [`R$ ${fmt(v)}`, name === 'receita' ? 'Recebido' : name === 'previsto' ? 'Previsto' : name === 'juros' ? 'Juros' : name]} />
+              <Area type="monotone" dataKey="previsto" name="previsto" stroke="#10B981" fillOpacity={1} fill="url(#colorPrevisto)" strokeWidth={2} />
+              <Area type="monotone" dataKey="receita" name="receita" stroke="#10B981" fillOpacity={0} strokeWidth={2} strokeDasharray="4 4" opacity={0.7} />
+              <Area type="monotone" dataKey="juros" name="juros" stroke="#F59E0B" fillOpacity={1} fill="url(#colorJuros)" strokeWidth={2} />
             </AreaChart>
           </ResponsiveContainer>
+        </div>
+        {/* Legenda */}
+        <div className="flex gap-4 mt-3 flex-wrap">
+          {[
+            { color: 'bg-accent', label: 'Previsto' },
+            { color: 'bg-accent opacity-60', label: 'Recebido (principal)' },
+            { color: 'bg-warning', label: 'Juros recebidos' },
+          ].map(l => (
+            <div key={l.label} className="flex items-center gap-1.5 text-[10px] text-text-dim">
+              <div className={`w-2 h-2 rounded-full ${l.color}`} />{l.label}
+            </div>
+          ))}
         </div>
       </div>
       <div className="panel-card p-6 flex flex-col">
@@ -331,8 +504,13 @@ const DashboardView = ({ stats, revenueData, onNavigate }: any) => (
         <div className="h-[200px] flex-grow">
           <ResponsiveContainer width="100%" height="100%">
             <PieChart>
-              <Pie data={[{ name: 'Pago', value: stats.received }, { name: 'Pendente', value: stats.pending }, { name: 'Atrasado', value: stats.overdue }]} innerRadius={55} outerRadius={75} paddingAngle={5} dataKey="value">
-                <Cell fill="#10B981" /><Cell fill="#F59E0B" /><Cell fill="#EF4444" />
+              <Pie data={[
+                { name: 'Pago', value: stats.received },
+                { name: 'Pendente', value: stats.pending },
+                { name: 'Atrasado', value: stats.overdue },
+                { name: 'Juros', value: stats.interestPending },
+              ]} innerRadius={55} outerRadius={75} paddingAngle={5} dataKey="value">
+                <Cell fill="#10B981" /><Cell fill="#F59E0B" /><Cell fill="#EF4444" /><Cell fill="#FBBF24" />
               </Pie>
               <Tooltip formatter={(v: any) => `R$ ${fmt(v)}`} contentStyle={{ backgroundColor: '#1C1F26', border: '1px solid #2D333E' }} />
             </PieChart>
@@ -343,6 +521,7 @@ const DashboardView = ({ stats, revenueData, onNavigate }: any) => (
             { label: 'Pago', color: 'bg-accent', val: stats.received, filter: 'paid' },
             { label: 'Pendente', color: 'bg-warning', val: stats.pending, filter: 'pending' },
             { label: 'Atrasado', color: 'bg-danger', val: stats.overdue, filter: 'overdue' },
+            { label: 'Juros em aberto', color: 'bg-yellow-400', val: stats.interestPending, filter: 'overdue' },
           ].map(r => (
             <div key={r.label} className="flex justify-between items-center text-[12px] cursor-pointer hover:bg-white/[0.02] rounded px-1 py-0.5 transition-colors" onClick={() => onNavigate('due-dates', r.filter)}>
               <span className="flex items-center text-text-dim"><div className={`w-2 h-2 ${r.color} rounded-full mr-2`} />{r.label}</span>
@@ -568,11 +747,206 @@ const ClientsView = ({ clients, contracts, onRefresh }: { clients: Client[]; con
   );
 };
 
+// ─── ProjectedInterestPanel ──────────────────────────────────────────────────
+
+const PROJECTION_PERIODS = [
+  { key: 'day1',   label: '1 Dia',    days: 1   },
+  { key: 'day7',   label: '1 Semana', days: 7   },
+  { key: 'day30',  label: '1 Mês',    days: 30  },
+  { key: 'day90',  label: '3 Meses',  days: 90  },
+  { key: 'day180', label: '6 Meses',  days: 180 },
+  { key: 'day365', label: '1 Ano',    days: 365 },
+] as const;
+
+const ProjectedInterestPanel = ({ stats }: { stats: any }) => {
+  const [selected, setSelected] = useState<string>('day30');
+  const selectedPeriod = PROJECTION_PERIODS.find(p => p.key === selected)!;
+  const selectedValue = stats.projected?.[selected as keyof typeof stats.projected] ?? 0;
+  const hasPendingWithInterest = selectedValue > 0 || stats.projected?.day1 > 0;
+
+  return (
+    <div className="panel-card p-5 space-y-4">
+      <div className="flex items-start justify-between flex-wrap gap-2">
+        <div>
+          <h3 className="font-semibold text-sm">Juros Projetados por Período</h3>
+          <p className="text-[11px] text-text-dim mt-0.5">
+            Estimativa de juros se as parcelas pendentes ficarem em atraso pelo período selecionado
+          </p>
+        </div>
+        {!hasPendingWithInterest && (
+          <span className="px-2 py-1 rounded bg-sidebar border border-border text-[10px] text-text-dim">
+            Sem juros configurados ou sem parcelas pendentes
+          </span>
+        )}
+      </div>
+
+      {/* Seletor de período */}
+      <div className="flex flex-wrap gap-1.5">
+        {PROJECTION_PERIODS.map(p => (
+          <button
+            key={p.key}
+            onClick={() => setSelected(p.key)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all ${
+              selected === p.key
+                ? 'bg-warning text-bg border-warning'
+                : 'bg-bg border-border text-text-dim hover:border-warning/40 hover:text-warning'
+            }`}
+          >
+            {p.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Valor em destaque */}
+      <div className="bg-warning/5 border border-warning/20 rounded-xl p-4 flex items-center justify-between">
+        <div>
+          <p className="text-[11px] text-warning/70 uppercase tracking-wider font-bold mb-1">
+            Juros se vencer há {selectedPeriod.label.toLowerCase()}
+          </p>
+          <p className="text-3xl font-black font-mono text-warning">
+            R$ {fmt(selectedValue)}
+          </p>
+          <p className="text-[10px] text-text-dim mt-1.5">
+            sobre R$ {fmt(stats.pending)} em parcelas pendentes com juros configurados
+          </p>
+        </div>
+        <div className="text-4xl opacity-20 font-black text-warning">%</div>
+      </div>
+
+      {/* Tabela comparativa de todos os períodos */}
+      <div className="border border-border rounded-lg overflow-hidden">
+        <div className="px-4 py-2 bg-sidebar border-b border-border">
+          <p className="text-[10px] font-bold text-text-dim uppercase tracking-wider">Comparativo — todos os períodos</p>
+        </div>
+        <div className="divide-y divide-border/30">
+          {PROJECTION_PERIODS.map(p => {
+            const val = stats.projected?.[p.key as keyof typeof stats.projected] ?? 0;
+            const isSelected = p.key === selected;
+            const pct = stats.pending > 0 ? (val / stats.pending) * 100 : 0;
+            return (
+              <button
+                key={p.key}
+                onClick={() => setSelected(p.key)}
+                className={`w-full flex items-center justify-between px-4 py-2.5 transition-colors text-left ${
+                  isSelected ? 'bg-warning/10' : 'hover:bg-white/[0.02]'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <span className={`text-xs font-semibold w-16 ${isSelected ? 'text-warning' : 'text-text-dim'}`}>
+                    {p.label}
+                  </span>
+                  {/* Barra proporcional */}
+                  <div className="w-20 h-1.5 bg-border rounded-full overflow-hidden hidden sm:block">
+                    <div
+                      className="h-full bg-warning rounded-full transition-all"
+                      style={{ width: `${Math.min(100, pct)}%` }}
+                    />
+                  </div>
+                </div>
+                <div className="text-right">
+                  <span className={`text-sm font-bold font-mono ${isSelected ? 'text-warning' : 'text-text-main'}`}>
+                    R$ {fmt(val)}
+                  </span>
+                  {pct > 0 && (
+                    <span className="text-[10px] text-text-dim ml-2">({pct.toFixed(1)}% do principal)</span>
+                  )}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+        {/* Total acumulado se não pagar nenhuma parcela no ano */}
+        <div className="px-4 py-3 bg-danger/5 border-t border-danger/20 flex justify-between items-center">
+          <span className="text-[11px] font-bold text-danger uppercase tracking-wider">
+            Total em atraso atual + projeção 1 ano
+          </span>
+          <span className="text-sm font-black font-mono text-danger">
+            R$ {fmt((stats.interestPending ?? 0) + (stats.projected?.day365 ?? 0))}
+          </span>
+        </div>
+      </div>
+
+      <p className="text-[10px] text-text-dim/60 leading-relaxed">
+        * Projeção calculada sobre o saldo total de parcelas pendentes com juros configurados.
+        Juros simples = linear · Juros compostos = exponencial (acumula sobre o saldo).
+        Valores reais dependem da data de atraso de cada parcela individualmente.
+      </p>
+    </div>
+  );
+};
+
+// ─── ContractEditForm ────────────────────────────────────────────────────────
+
+const ContractEditForm = ({ contract, clients, onSave, onClose }: { contract: Contract; clients: Client[]; onSave: (d: any) => void; onClose: () => void }) => {
+  const [form, setForm] = useState({
+    clientId: contract.clientId,
+    description: contract.description,
+    status: contract.status,
+    lateInterestRate: String(contract.lateInterestRate ?? 0),
+    interestType: (contract.interestType ?? 'compound') as 'compound' | 'simple',
+  });
+
+  return (
+    <form className="space-y-4" onSubmit={e => { e.preventDefault(); onSave(form); }}>
+      <div className="bg-warning/5 border border-warning/20 rounded-lg px-3 py-2 text-[11px] text-warning">
+        ⚠ Edição de contrato altera apenas os campos abaixo. Parcelas já geradas não são recalculadas.
+      </div>
+
+      <Field label="Cliente">
+        <Select value={form.clientId} onChange={e => setForm(f => ({ ...f, clientId: e.target.value }))}>
+          {clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </Select>
+      </Field>
+
+      <Field label="Descrição">
+        <Input value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} placeholder="Ex: Empréstimo pessoal" />
+      </Field>
+
+      <Field label="Status">
+        <Select value={form.status} onChange={e => setForm(f => ({ ...f, status: e.target.value as Contract['status'] }))}>
+          <option value="active">Ativo</option>
+          <option value="completed">Concluído</option>
+          <option value="cancelled">Cancelado</option>
+        </Select>
+      </Field>
+
+      <div>
+        <label className="block text-[11px] font-medium text-text-dim uppercase tracking-wider mb-2">Juros por Atraso</label>
+        <div className="space-y-3">
+          <Field label="Taxa de Juros/dia (%)">
+            <Input type="number" min="0" step="0.01" value={form.lateInterestRate}
+              onChange={e => setForm(f => ({ ...f, lateInterestRate: e.target.value }))} />
+          </Field>
+          <div className="grid grid-cols-2 gap-2">
+            {([
+              { id: 'compound', label: 'Composto', desc: 'Juros sobre juros' },
+              { id: 'simple', label: 'Simples', desc: 'Juros sobre o principal' },
+            ] as const).map(opt => (
+              <button key={opt.id} type="button"
+                onClick={() => setForm(f => ({ ...f, interestType: opt.id }))}
+                className={`p-3 rounded-lg text-left border transition-all ${form.interestType === opt.id ? 'bg-accent/10 border-accent text-accent' : 'bg-bg border-border text-text-dim hover:border-accent/40'}`}>
+                <div className="font-bold text-xs">{opt.label}</div>
+                <div className="text-[10px] opacity-70 mt-0.5">{opt.desc}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="flex gap-3 pt-2">
+        <Btn type="submit">Salvar Alterações</Btn>
+        <Btn type="button" variant="ghost" onClick={onClose}>Cancelar</Btn>
+      </div>
+    </form>
+  );
+};
+
 // ─── ContractsView ────────────────────────────────────────────────────────────
 
 const ContractsView = ({ contracts, clients, installments, onRefresh, onNavigate }: any) => {
   const [search, setSearch] = useState('');
-  const [modal, setModal] = useState(false);
+  const [addModal, setAddModal] = useState(false);
+  const [editingContract, setEditingContract] = useState<Contract | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
 
   const enriched = dataService.getEnrichedInstallments();
@@ -582,44 +956,58 @@ const ContractsView = ({ contracts, clients, installments, onRefresh, onNavigate
     return (client?.name ?? '').toLowerCase().includes(search.toLowerCase()) || c.description.toLowerCase().includes(search.toLowerCase());
   });
 
-  const handleSave = async (data: any) => { await dataService.addContract(data); setModal(false); onRefresh(); };
-  const handleDelete = async (id: string) => { if (!window.confirm('Excluir este contrato e suas parcelas?')) return; await dataService.deleteContract(id); onRefresh(); };
+  const handleAdd = async (data: any) => { await dataService.addContract(data); setAddModal(false); onRefresh(); };
+  const handleEdit = async (data: any) => {
+    if (!editingContract) return;
+    await dataService.updateContract(editingContract.id, {
+      clientId: data.clientId,
+      description: data.description,
+      status: data.status,
+      lateInterestRate: parseFloat(data.lateInterestRate) || 0,
+      interestType: data.interestType,
+    });
+    setEditingContract(null);
+    onRefresh();
+  };
+  const handleDelete = async (id: string) => {
+    if (!window.confirm('Excluir este contrato e suas parcelas?')) return;
+    await dataService.deleteContract(id); onRefresh();
+  };
 
   const contractStats = dataService.getStats();
   const enrichedAll = dataService.getEnrichedInstallments();
   const veryOverdue = enrichedAll.filter((i: EnrichedInstallment) => i.status === 'overdue' && i.daysLate > 30);
-  const interestReceived = enrichedAll.filter((i: EnrichedInstallment) => i.status === 'paid').reduce((s: number, i: EnrichedInstallment) => s + (i.computedInterest || 0), 0);
-  const interestPending = enrichedAll.filter((i: EnrichedInstallment) => i.status !== 'paid').reduce((s: number, i: EnrichedInstallment) => s + (i.computedInterest || 0), 0);
 
   const summaryCards = [
-    { label: 'Contratos', value: String(contracts.length), color: 'text-text-main', nav: undefined },
-    { label: 'Valor Previsto', value: `R$ ${fmt(contractStats.totalValue)}`, color: 'text-text-main', nav: undefined },
-    { label: 'Recebido', value: `R$ ${fmt(contractStats.received)}`, color: 'text-accent', nav: 'paid' },
-    { label: 'Valor Total', value: `R$ ${fmt(contractStats.totalValue)}`, color: 'text-text-main', nav: undefined },
-    { label: 'Em Aberto', value: `R$ ${fmt(contractStats.pending)}`, color: 'text-warning', nav: 'pending' },
-    { label: 'Em Atraso', value: `R$ ${fmt(contractStats.overdue)}`, color: 'text-danger', nav: 'overdue' },
-    { label: 'Juros Total', value: `R$ ${fmt(contractStats.totalInterest)}`, color: 'text-warning', nav: undefined },
-    { label: 'Juros Recebido', value: `R$ ${fmt(interestReceived)}`, color: 'text-accent', nav: undefined },
-    { label: 'Juros a Receber', value: `R$ ${fmt(interestPending)}`, color: 'text-warning', nav: undefined },
-    { label: 'Muito Atraso', value: `R$ ${fmt(veryOverdue.reduce((s: number, i: EnrichedInstallment) => s + i.totalDue, 0))}`, color: 'text-danger', nav: 'overdue' },
-    { label: 'Multas Recebidas', value: `R$ ${fmt(interestReceived)}`, color: 'text-accent', nav: undefined },
+    { label: 'Contratos', value: String(contracts.length), color: 'text-text-main', nav: undefined, tip: undefined },
+    { label: 'Valor Total', value: `R$ ${fmt(contractStats.totalValue)}`, color: 'text-text-main', nav: undefined, tip: undefined },
+    { label: 'Recebido', value: `R$ ${fmt(contractStats.received)}`, color: 'text-accent', nav: 'paid', tip: 'parcelas pagas' },
+    { label: 'Em Aberto', value: `R$ ${fmt(contractStats.pending)}`, color: 'text-warning', nav: 'pending', tip: 'parcelas pendentes' },
+    { label: 'Em Atraso', value: `R$ ${fmt(contractStats.overdue)}`, color: 'text-danger', nav: 'overdue', tip: 'principal + juros' },
+    { label: 'Juros Recebidos', value: `R$ ${fmt(contractStats.interestReceived)}`, color: 'text-accent', nav: undefined, tip: 'cobrado nas pagas' },
+    { label: 'Juros em Atraso', value: `R$ ${fmt(contractStats.interestPending)}`, color: 'text-danger', nav: 'overdue', tip: 'acumulado nas atrasadas' },
+    { label: 'Juros Projetado 30d', value: `R$ ${fmt(contractStats.projectedInterest)}`, color: 'text-warning', nav: undefined, tip: 'se pendentes ficarem 30d atrasadas' },
+    { label: 'Atraso +30 dias', value: `R$ ${fmt(veryOverdue.reduce((s: number, i: EnrichedInstallment) => s + i.totalDue, 0))}`, color: 'text-danger', nav: 'overdue', tip: 'total com juros' },
   ];
 
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
         {summaryCards.map(s => (
-          <div
-            key={s.label}
+          <div key={s.label}
             className={`panel-card p-4 transition-all ${s.nav ? 'cursor-pointer hover:border-accent/40' : ''}`}
             onClick={() => s.nav && onNavigate('due-dates', s.nav)}
           >
             <p className="text-[10px] text-text-dim uppercase tracking-widest mb-1 font-medium">{s.label}</p>
             <p className={`text-sm font-bold ${s.color}`}>{s.value}</p>
+            {s.tip && <p className="text-[9px] text-text-dim/60 mt-0.5">{s.tip}</p>}
             {s.nav && <p className="text-[9px] text-accent/50 mt-1">Ver detalhes →</p>}
           </div>
         ))}
       </div>
+
+      {/* Painel de juros projetados */}
+      <ProjectedInterestPanel stats={contractStats} />
 
       <div className="panel-card overflow-hidden">
         <div className="p-6 border-b border-border flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
@@ -629,7 +1017,7 @@ const ContractsView = ({ contracts, clients, installments, onRefresh, onNavigate
               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-dim" />
               <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar..." className="bg-bg border border-border rounded-lg pl-9 pr-4 py-1.5 text-xs outline-none focus:border-accent/40 w-full" />
             </label>
-            <Btn onClick={() => setModal(true)}><Plus size={14} /> Novo Contrato</Btn>
+            <Btn onClick={() => setAddModal(true)}><Plus size={14} /> Novo Contrato</Btn>
           </div>
         </div>
         <div className="divide-y divide-border/20">
@@ -638,6 +1026,8 @@ const ContractsView = ({ contracts, clients, installments, onRefresh, onNavigate
             const client = clients.find((cl: Client) => cl.id === c.clientId);
             const insts = enriched.filter((i: EnrichedInstallment) => i.contractId === c.id);
             const paid = insts.filter((i: EnrichedInstallment) => i.status === 'paid').length;
+            const overdueInsts = insts.filter((i: EnrichedInstallment) => i.status === 'overdue');
+            const totalInterestOnContract = insts.reduce((s: number, i: EnrichedInstallment) => s + i.computedInterest, 0);
             const isOpen = expanded === c.id;
             return (
               <div key={c.id}>
@@ -646,31 +1036,92 @@ const ContractsView = ({ contracts, clients, installments, onRefresh, onNavigate
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-medium text-sm text-text-main">{client?.name ?? '—'}</span>
                       {statusBadge(c.status)}
+                      {/* Badge de tipo de juros configurado */}
+                      {(c.lateInterestRate ?? 0) > 0 && (
+                        <span className="px-1.5 py-0.5 rounded bg-warning/10 text-warning text-[9px] font-bold">
+                          {c.lateInterestRate}%/dia {c.interestType === 'simple' ? '(simples)' : '(composto)'}
+                        </span>
+                      )}
                     </div>
-                    <div className="text-xs text-text-dim mt-0.5">{c.description} · {c.installmentsCount}x R$ {fmt(c.totalAmount / c.installmentsCount)}</div>
+                    <div className="text-xs text-text-dim mt-0.5">
+                      {c.description} · {c.installmentsCount}x R$ {fmt(c.totalAmount / c.installmentsCount)}
+                      {/* Mostra juros acumulados se houver atraso */}
+                      {totalInterestOnContract > 0 && (
+                        <span className="ml-2 text-danger">· +R$ {fmt(totalInterestOnContract)} juros</span>
+                      )}
+                    </div>
                   </div>
                   <div className="text-right shrink-0">
                     <div className="font-bold text-text-main text-sm">R$ {fmt(c.totalAmount)}</div>
                     <div className="text-[11px] text-text-dim">{paid}/{c.installmentsCount} pagas</div>
+                    {overdueInsts.length > 0 && (
+                      <div className="text-[10px] text-danger">{overdueInsts.length} em atraso</div>
+                    )}
                   </div>
-                  <div className="flex gap-1">
-                    <button onClick={() => setExpanded(isOpen ? null : c.id)} className="p-1.5 hover:bg-sidebar rounded text-text-dim hover:text-text-main transition-all">{isOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}</button>
-                    <button onClick={() => handleDelete(c.id)} className="p-1.5 hover:bg-danger/10 rounded text-text-dim hover:text-danger transition-all"><Trash2 size={13} /></button>
+                  <div className="flex gap-1 shrink-0">
+                    <button
+                      onClick={() => setExpanded(isOpen ? null : c.id)}
+                      className="p-1.5 hover:bg-sidebar rounded text-text-dim hover:text-text-main transition-all"
+                      title="Ver parcelas"
+                    >
+                      {isOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                    </button>
+                    <button
+                      onClick={() => setEditingContract(c)}
+                      className="p-1.5 hover:bg-sidebar rounded text-text-dim hover:text-text-main transition-all"
+                      title="Editar contrato"
+                    >
+                      <Edit3 size={13} />
+                    </button>
+                    <button
+                      onClick={() => handleDelete(c.id)}
+                      className="p-1.5 hover:bg-danger/10 rounded text-text-dim hover:text-danger transition-all"
+                      title="Excluir contrato"
+                    >
+                      <Trash2 size={13} />
+                    </button>
                   </div>
                 </div>
                 {isOpen && (
                   <div className="bg-bg border-t border-border/40 px-6 py-4">
+                    {/* Resumo de juros do contrato */}
+                    {(c.lateInterestRate ?? 0) > 0 && (
+                      <div className="mb-3 flex gap-3 flex-wrap text-[10px]">
+                        <span className="px-2 py-1 rounded bg-warning/10 text-warning border border-warning/20">
+                          Taxa: {c.lateInterestRate}%/dia · {c.interestType === 'simple' ? 'Juros Simples' : 'Juros Compostos'}
+                        </span>
+                        {totalInterestOnContract > 0 && (
+                          <span className="px-2 py-1 rounded bg-danger/10 text-danger border border-danger/20">
+                            Juros acumulados: R$ {fmt(totalInterestOnContract)}
+                          </span>
+                        )}
+                        {totalInterestOnContract === 0 && (
+                          <span className="px-2 py-1 rounded bg-sidebar text-text-dim border border-border">
+                            Sem atraso — juros zerados
+                          </span>
+                        )}
+                      </div>
+                    )}
                     <div className="text-[11px] text-text-dim uppercase tracking-widest mb-3">Parcelas</div>
                     <div className="space-y-2">
                       {insts.map((inst: EnrichedInstallment) => (
-                        <div key={inst.id} className="flex items-center gap-3 text-xs">
+                        <div key={inst.id} className="flex items-center gap-3 text-xs flex-wrap">
                           <span className="text-text-dim w-16 shrink-0">Parcela {inst.number}</span>
                           <span className="font-mono text-text-main w-24 shrink-0">R$ {fmt(inst.amount)}</span>
                           <span className="text-text-dim w-24 shrink-0">{fmtDate(inst.dueDate)}</span>
                           {statusBadge(inst.status)}
-                          {inst.status === 'overdue' && <span className="text-danger text-[10px]">+R$ {fmt(inst.computedInterest)} juros ({inst.daysLate}d)</span>}
+                          {inst.status === 'overdue' && (
+                            <span className="text-danger text-[10px] font-mono">
+                              +R$ {fmt(inst.computedInterest)} juros · {inst.daysLate}d atraso
+                            </span>
+                          )}
+                          {inst.status === 'paid' && (inst as any).interestPaid > 0 && (
+                            <span className="text-accent text-[10px]">
+                              (juros pago: R$ {fmt((inst as any).interestPaid)})
+                            </span>
+                          )}
                           {inst.status !== 'paid'
-                            ? <button onClick={() => { dataService.markInstallmentPaid(inst.id); onRefresh(); }} className="ml-auto px-2 py-0.5 rounded bg-accent/10 text-accent text-[10px] hover:bg-accent/20 transition-colors">Marcar Pago</button>
+                            ? <button onClick={() => { dataService.markInstallmentPaid(inst.id); onRefresh(); }} className="ml-auto px-2 py-0.5 rounded bg-accent/10 text-accent text-[10px] hover:bg-accent/20 transition-colors">✓ Marcar Pago</button>
                             : <button onClick={() => { dataService.markInstallmentPending(inst.id); onRefresh(); }} className="ml-auto px-2 py-0.5 rounded bg-sidebar text-text-dim text-[10px] hover:bg-white/5 transition-colors border border-border">Desfazer</button>
                           }
                         </div>
@@ -684,9 +1135,14 @@ const ContractsView = ({ contracts, clients, installments, onRefresh, onNavigate
         </div>
       </div>
       <AnimatePresence>
-        {modal && (
-          <Modal title="Novo Contrato" onClose={() => setModal(false)}>
-            <ContractForm clients={clients} onSave={handleSave} onClose={() => setModal(false)} />
+        {addModal && (
+          <Modal title="Novo Contrato" onClose={() => setAddModal(false)}>
+            <ContractForm clients={clients} onSave={handleAdd} onClose={() => setAddModal(false)} />
+          </Modal>
+        )}
+        {editingContract && (
+          <Modal title={`Editar Contrato — ${clients.find((cl: Client) => cl.id === editingContract.clientId)?.name ?? 'Contrato'}`} onClose={() => setEditingContract(null)}>
+            <ContractEditForm contract={editingContract} clients={clients} onSave={handleEdit} onClose={() => setEditingContract(null)} />
           </Modal>
         )}
       </AnimatePresence>
@@ -795,12 +1251,25 @@ const AnalysisView = ({ revenueData, stats, onNavigate }: any) => (
               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#2D333E" opacity={0.3} />
               <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#94A3B8', fontSize: 10 }} />
               <YAxis axisLine={false} tickLine={false} tick={{ fill: '#94A3B8', fontSize: 10 }} />
-              <Tooltip cursor={{ fill: 'rgba(16,185,129,0.05)' }} contentStyle={{ backgroundColor: '#1C1F26', border: '1px solid #2D333E' }} formatter={(v: any) => `R$ ${fmt(v)}`} />
-              <Bar dataKey="previsto" fill="#10B981" radius={[2, 2, 0, 0]} barSize={24} opacity={0.2} />
-              <Bar dataKey="receita" fill="#10B981" radius={[2, 2, 0, 0]} barSize={24} />
-              <Bar dataKey="atrasado" fill="#EF4444" radius={[2, 2, 0, 0]} barSize={8} opacity={0.6} />
+              <Tooltip cursor={{ fill: 'rgba(16,185,129,0.05)' }} contentStyle={{ backgroundColor: '#1C1F26', border: '1px solid #2D333E' }} formatter={(v: any, name: string) => [`R$ ${fmt(v)}`, name === 'receita' ? 'Recebido' : name === 'previsto' ? 'Previsto' : name === 'juros' ? 'Juros' : 'Atrasado']} />
+              <Bar dataKey="previsto" fill="#10B981" radius={[2, 2, 0, 0]} barSize={20} opacity={0.2} name="previsto" />
+              <Bar dataKey="receita" fill="#10B981" radius={[2, 2, 0, 0]} barSize={20} name="receita" />
+              <Bar dataKey="juros" fill="#F59E0B" radius={[2, 2, 0, 0]} barSize={10} opacity={0.9} name="juros" />
+              <Bar dataKey="atrasado" fill="#EF4444" radius={[2, 2, 0, 0]} barSize={8} opacity={0.6} name="atrasado" />
             </BarChart>
           </ResponsiveContainer>
+        </div>
+        <div className="flex gap-3 mt-3 flex-wrap">
+          {[
+            { color: 'bg-accent opacity-30', label: 'Previsto' },
+            { color: 'bg-accent', label: 'Recebido' },
+            { color: 'bg-warning', label: 'Juros recebidos' },
+            { color: 'bg-danger opacity-60', label: 'Atrasado' },
+          ].map(l => (
+            <div key={l.label} className="flex items-center gap-1 text-[10px] text-text-dim">
+              <div className={`w-2 h-2 rounded-full ${l.color}`} />{l.label}
+            </div>
+          ))}
         </div>
       </section>
       <section className="panel-card p-6 flex flex-col">
@@ -819,10 +1288,17 @@ const AnalysisView = ({ revenueData, stats, onNavigate }: any) => (
             <div className="text-2xl font-bold font-mono text-danger">{stats.totalValue > 0 ? ((stats.overdue / stats.totalValue) * 100).toFixed(1) : '0.0'}%</div>
             <div className="text-[10px] text-danger/60 mt-1">Ver parcelas em atraso →</div>
           </div>
-          <div className="bg-warning/5 border border-dashed border-warning/30 p-4 rounded-lg cursor-pointer hover:bg-warning/10 transition-colors" onClick={() => onNavigate('reports')}>
-            <div className="text-[10px] font-bold text-warning uppercase mb-2 tracking-wider">Total de Juros Acumulados</div>
-            <div className="text-2xl font-bold font-mono text-warning">R$ {fmt(stats.totalInterest)}</div>
-            <div className="text-[10px] text-warning/60 mt-1">Ver relatório completo →</div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="bg-accent/5 border border-accent/20 p-3 rounded-lg cursor-pointer hover:bg-accent/10 transition-colors" onClick={() => onNavigate('reports')}>
+              <div className="text-[10px] font-bold text-accent uppercase mb-1 tracking-wider">Juros Recebidos</div>
+              <div className="text-lg font-bold font-mono text-accent">R$ {fmt(stats.interestReceived)}</div>
+              <div className="text-[9px] text-accent/60 mt-0.5">cobrado e pago</div>
+            </div>
+            <div className="bg-danger/5 border border-danger/20 p-3 rounded-lg cursor-pointer hover:bg-danger/10 transition-colors" onClick={() => onNavigate('due-dates', 'overdue')}>
+              <div className="text-[10px] font-bold text-danger uppercase mb-1 tracking-wider">Juros em Atraso</div>
+              <div className="text-lg font-bold font-mono text-danger">R$ {fmt(stats.interestPending)}</div>
+              <div className="text-[9px] text-danger/60 mt-0.5">acumulado nas atrasadas</div>
+            </div>
           </div>
         </div>
       </section>
@@ -844,6 +1320,7 @@ const AnalysisView = ({ revenueData, stats, onNavigate }: any) => (
         ))}
       </div>
     </div>
+    <ProjectedInterestPanel stats={stats} />
   </div>
 );
 
@@ -869,10 +1346,22 @@ const ReportsView = ({ clients, contracts, onNavigate }: any) => {
 
   const overdue = enriched.filter(i => i.status === 'overdue');
   const filteredStats = {
-    totalValue: enriched.reduce((a, i) => a + i.amount, 0),
-    received: enriched.filter(i => i.status === 'paid').reduce((a, i) => a + i.amount, 0),
-    pending: enriched.filter(i => i.status === 'pending').reduce((a, i) => a + i.amount, 0),
-    overdue: overdue.reduce((a, i) => a + i.totalDue, 0),
+    totalValue:        enriched.reduce((a, i) => a + i.amount, 0),
+    received:          enriched.filter(i => i.status === 'paid').reduce((a, i) => a + i.amount, 0),
+    pending:           enriched.filter(i => i.status === 'pending').reduce((a, i) => a + i.amount, 0),
+    overdue:           overdue.reduce((a, i) => a + i.totalDue, 0),
+    // Juros efetivamente cobrados nas parcelas pagas (campo interestPaid salvo no banco)
+    interestReceived:  dataService.getInstallments()
+                         .filter(i => {
+                           if (i.status !== 'paid') return false;
+                           if (statusFilter !== 'all' && i.status !== statusFilter) return false;
+                           if (dateFrom && i.dueDate < dateFrom) return false;
+                           if (dateTo && i.dueDate > dateTo) return false;
+                           return true;
+                         })
+                         .reduce((a, i) => a + (i.interestPaid ?? 0), 0),
+    // Juros acumulado nas parcelas em atraso do período filtrado
+    interestPending:   overdue.reduce((a, i) => a + i.computedInterest, 0),
   };
 
   const hasFilter = dateFrom || dateTo || statusFilter !== 'all';
@@ -974,16 +1463,18 @@ const ReportsView = ({ clients, contracts, onNavigate }: any) => {
       </div>
 
       {/* Summary cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
         {[
-          { l: 'Total Cobrado', v: `R$ ${fmt(filteredStats.totalValue)}`, c: 'text-text-main', nav: 'contracts', filter: undefined },
-          { l: 'Recebido', v: `R$ ${fmt(filteredStats.received)}`, c: 'text-accent', nav: 'due-dates', filter: 'paid' },
-          { l: 'Pendente', v: `R$ ${fmt(filteredStats.pending)}`, c: 'text-warning', nav: 'due-dates', filter: 'pending' },
-          { l: 'Em Atraso + Juros', v: `R$ ${fmt(filteredStats.overdue)}`, c: 'text-danger', nav: 'due-dates', filter: 'overdue' },
+          { l: 'Total Cobrado',     v: `R$ ${fmt(filteredStats.totalValue)}`,        c: 'text-text-main', nav: 'contracts', filter: undefined },
+          { l: 'Recebido',          v: `R$ ${fmt(filteredStats.received)}`,           c: 'text-accent',    nav: 'due-dates', filter: 'paid' },
+          { l: 'Pendente',          v: `R$ ${fmt(filteredStats.pending)}`,            c: 'text-warning',   nav: 'due-dates', filter: 'pending' },
+          { l: 'Em Atraso + Juros', v: `R$ ${fmt(filteredStats.overdue)}`,            c: 'text-danger',    nav: 'due-dates', filter: 'overdue' },
+          { l: 'Juros Recebidos',   v: `R$ ${fmt(filteredStats.interestReceived)}`,   c: 'text-accent',    nav: 'due-dates', filter: 'paid' },
+          { l: 'Juros a Receber',   v: `R$ ${fmt(filteredStats.interestPending)}`,    c: 'text-danger',    nav: 'due-dates', filter: 'overdue' },
         ].map(s => (
-          <div key={s.l} className="panel-card p-5 cursor-pointer hover:border-accent/40 transition-all" onClick={() => onNavigate(s.nav, s.filter)}>
+          <div key={s.l} className="panel-card p-4 cursor-pointer hover:border-accent/40 transition-all" onClick={() => onNavigate(s.nav, s.filter)}>
             <p className="text-[10px] text-text-dim uppercase tracking-widest mb-1">{s.l}</p>
-            <p className={`text-xl font-bold ${s.c}`}>{s.v}</p>
+            <p className={`text-base font-bold ${s.c}`}>{s.v}</p>
             <p className="text-[9px] text-accent/50 mt-1">Ver detalhes →</p>
           </div>
         ))}
@@ -1515,11 +2006,9 @@ export default function App() {
   // ── Loading screen ──
   if (user === undefined) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-bg">
-        <div className="flex flex-col items-center gap-4">
-          <div className="w-8 h-8 border-2 border-accent border-t-transparent rounded-full animate-spin" />
-          <p className="text-text-dim text-sm">Carregando...</p>
-        </div>
+      <div className="flex flex-col items-center justify-center gap-4 bg-bg" style={{ minHeight: 'var(--app-height, 100dvh)' }}>
+        <div className="w-8 h-8 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+        <p className="text-text-dim text-sm">Carregando...</p>
       </div>
     );
   }
@@ -1551,9 +2040,10 @@ export default function App() {
   const overdueCount = stats.overdueCount;
 
   return (
-    <div className="min-h-screen flex bg-bg">
+    <div className="app-shell flex bg-bg" style={{ height: 'var(--app-height, 100dvh)' }}>
       {/* Sidebar */}
-      <aside className={`fixed inset-y-0 left-0 z-50 w-60 bg-sidebar transform transition-transform duration-300 ease-in-out border-r border-border ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'} lg:relative lg:translate-x-0`}>
+      <aside className={`fixed inset-y-0 left-0 z-50 w-60 bg-sidebar transform transition-transform duration-300 ease-in-out border-r border-border ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'} lg:relative lg:translate-x-0`}
+        style={{ height: 'var(--app-height, 100dvh)' }}>
         <div className="p-6 flex flex-col h-full">
           <div className="flex items-center gap-3 mb-8 px-1">
             <div className="w-8 h-8 bg-accent rounded-lg flex items-center justify-center text-bg shadow-lg shadow-accent/10"><CreditCard size={18} /></div>
@@ -1588,7 +2078,7 @@ export default function App() {
 
       {isSidebarOpen && <div className="fixed inset-0 z-40 bg-black/40 lg:hidden" onClick={() => setIsSidebarOpen(false)} />}
 
-      <main className="flex-1 flex flex-col h-screen overflow-hidden text-text-main font-sans">
+      <main className="flex-1 flex flex-col overflow-hidden text-text-main font-sans" style={{ height: 'var(--app-height, 100dvh)' }}>
         <header className="bg-bg/80 backdrop-blur-md border-b border-border px-6 h-12 flex items-center justify-between sticky top-0 z-40">
           <div className="flex items-center gap-4">
             <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="lg:hidden p-1 text-text-dim">
@@ -1619,7 +2109,7 @@ export default function App() {
           </div>
         </header>
 
-        <div className="flex-1 overflow-y-auto p-6 md:p-8 bg-bg" style={{ scrollbarWidth: 'thin', scrollbarColor: '#2a2a2a transparent' }}>
+        <div className="flex-1 overflow-y-auto p-6 md:p-8 bg-bg scroll-smooth-ios" style={{ scrollbarWidth: 'thin', scrollbarColor: '#2a2a2a transparent', WebkitOverflowScrolling: 'touch' } as any}>
           <AnimatePresence mode="wait">
             <motion.div key={activeTab} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }}>
               <header className="mb-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -1669,21 +2159,53 @@ function AuthScreen({ onGoogleLogin }: { onGoogleLogin: () => void }) {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [loading, setLoading] = useState(false);
+  // 'google' = conta vinculada ao Google, 'exists' = conta com senha já existe
+  const [existingProvider, setExistingProvider] = useState<'google' | 'exists' | null>(null);
 
   const reset = (m: AuthMode) => {
-    setMode(m); setError(''); setSuccess(''); setPassword(''); setConfirmPassword('');
+    setMode(m); setError(''); setSuccess(''); setPassword(''); setConfirmPassword(''); setExistingProvider(null);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError(''); setSuccess(''); setLoading(true);
+    setError(''); setSuccess(''); setExistingProvider(null); setLoading(true);
     try {
       if (mode === 'login') {
         await signInWithEmailAndPassword(auth, email, password);
+
       } else if (mode === 'register') {
         if (password !== confirmPassword) { setError('As senhas não coincidem.'); setLoading(false); return; }
         if (password.length < 6) { setError('A senha deve ter pelo menos 6 caracteres.'); setLoading(false); return; }
-        await createUserWithEmailAndPassword(auth, email, password);
+
+        try {
+          await createUserWithEmailAndPassword(auth, email, password);
+        } catch (regErr: any) {
+          if (regErr.code === 'auth/email-already-in-use') {
+            // Descobrir qual provedor está vinculado a esse e-mail
+            try {
+              const methods = await fetchSignInMethodsForEmail(auth, email);
+              if (methods.includes('google.com') && !methods.includes('password')) {
+                // Conta Google — sugerir login com Google
+                setExistingProvider('google');
+                setError('Este e-mail já está vinculado a uma conta Google. Use o botão "Entrar com Google" abaixo.');
+              } else {
+                // Conta com senha — trocar para modo login
+                setExistingProvider('exists');
+                setMode('login');
+                setPassword('');
+                setError('Este e-mail já possui cadastro. Digite sua senha para entrar.');
+              }
+            } catch {
+              // fallback: só mostrar mensagem e mudar para login
+              setMode('login');
+              setPassword('');
+              setError('Este e-mail já possui cadastro. Faça login abaixo.');
+            }
+          } else {
+            throw regErr;
+          }
+        }
+
       } else if (mode === 'forgot') {
         await sendPasswordResetEmail(auth, email);
         setSuccess('E-mail de redefinição enviado! Verifique sua caixa de entrada.');
@@ -1702,7 +2224,7 @@ function AuthScreen({ onGoogleLogin }: { onGoogleLogin: () => void }) {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-bg px-4">
+    <div className="flex items-center justify-center bg-bg px-4" style={{ minHeight: 'var(--app-height, 100dvh)' }}>
       <div className="bg-card border border-border rounded-2xl p-8 flex flex-col gap-6 shadow-2xl w-full max-w-sm">
         {/* Logo */}
         <div className="flex flex-col items-center gap-3">
@@ -1770,8 +2292,28 @@ function AuthScreen({ onGoogleLogin }: { onGoogleLogin: () => void }) {
           )}
 
           {error && (
-            <div className="bg-danger/10 border border-danger/30 rounded-lg px-3 py-2 text-xs text-danger flex items-center gap-2">
-              <AlertCircle size={12} className="shrink-0" /> {error}
+            <div className="bg-danger/10 border border-danger/30 rounded-lg px-3 py-2 text-xs text-danger space-y-2">
+              <div className="flex items-start gap-2">
+                <AlertCircle size={12} className="shrink-0 mt-0.5" /> <span>{error}</span>
+              </div>
+              {existingProvider === 'google' && (
+                <button
+                  type="button"
+                  onClick={onGoogleLogin}
+                  className="w-full flex items-center justify-center gap-2 bg-white text-gray-800 font-semibold py-2 rounded-lg hover:bg-gray-100 transition-all text-xs shadow"
+                >
+                  <svg width="14" height="14" viewBox="0 0 48 48">
+                    <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+                    <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+                    <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+                    <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.31-8.16 2.31-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+                  </svg>
+                  Entrar com Google agora
+                </button>
+              )}
+              {existingProvider === 'exists' && (
+                <p className="text-danger/70">Digite sua senha no campo acima para entrar.</p>
+              )}
             </div>
           )}
 
