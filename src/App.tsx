@@ -176,8 +176,12 @@ const ContractForm = ({ clients, onSave, onClose }: { clients: Client[]; onSave:
     applyInterestOnValue: false,
     interestOnValueRate: '0',
     applyLateInterest: true,
+    interestType: 'compound' as 'compound' | 'simple',
+    // Campo auxiliar para entrada em meses (não é salvo no contrato diretamente)
+    durationMonths: '',
   });
   const set = (k: string) => (e: any) => setForm(f => ({ ...f, [k]: e.target.value }));
+
   const amount = parseFloat(form.totalAmount) || 0;
   const count = parseInt(form.installmentsCount) || 1;
   const interestRate = parseFloat(form.interestOnValueRate) || 0;
@@ -185,15 +189,62 @@ const ContractForm = ({ clients, onSave, onClose }: { clients: Client[]; onSave:
   const interestPerInstall = form.applyInterestOnValue ? baseInstall * (interestRate / 100) : 0;
   const installAmt = (baseInstall + interestPerInstall).toFixed(2);
 
+  // Converte duração em meses → número de parcelas conforme tipo de cobrança
+  const monthsToInstallments = (months: number): number => {
+    switch (form.billingType) {
+      case 'daily':     return months * 30;
+      case 'weekly':    return months * 4;
+      case 'biweekly':  return months * 2;
+      case 'monthly':
+      default:          return months;
+    }
+  };
+
+  const handleMonthsChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const months = parseInt(e.target.value) || 0;
+    setForm(f => ({
+      ...f,
+      durationMonths: e.target.value,
+      installmentsCount: months > 0 ? String(monthsToInstallments(months)) : f.installmentsCount,
+    }));
+  };
+
+  // Prévia das primeiras datas de vencimento
+  const previewDates = () => {
+    if (!form.firstPaymentDate) return [];
+    const base = new Date(form.firstPaymentDate + 'T00:00:00');
+    const billingIntervals: Record<string, number> = { daily: 1, weekly: 7, biweekly: 15, monthly: 0 };
+    const result = [];
+    for (let i = 0; i < Math.min(3, count); i++) {
+      let d: Date;
+      if (form.billingType === 'monthly') {
+        d = new Date(base.getFullYear(), base.getMonth() + i, base.getDate());
+      } else {
+        d = new Date(base.getTime() + i * billingIntervals[form.billingType] * 86400000);
+      }
+      if (form.skipNonBusinessDays) {
+        while (d.getDay() === 0 || d.getDay() === 6) d = new Date(d.getTime() + 86400000);
+      }
+      result.push(format(d, 'dd/MM/yyyy'));
+    }
+    return result;
+  };
+
   return (
     <form className="space-y-4" onSubmit={e => {
       e.preventDefault();
       onSave({
-        ...form,
+        clientId: form.clientId,
+        description: form.description,
         totalAmount: amount,
         installmentsCount: count,
+        firstPaymentDate: form.firstPaymentDate,
+        startDate: form.startDate,
         lateInterestRate: form.applyLateInterest ? (parseFloat(form.lateInterestRate) || 0) : 0,
         interestOnValueRate: form.applyInterestOnValue ? interestRate : 0,
+        billingType: form.billingType,
+        skipNonBusinessDays: form.skipNonBusinessDays,
+        interestType: form.interestType,
         status: 'active',
       });
     }}>
@@ -204,34 +255,45 @@ const ContractForm = ({ clients, onSave, onClose }: { clients: Client[]; onSave:
         </Select>
       </Field>
       <Field label="Descrição">
-        <Input value={form.description} onChange={set('description')} placeholder="Ex: Serviço de consultoria" />
+        <Input value={form.description} onChange={set('description')} placeholder="Ex: Empréstimo pessoal" />
       </Field>
 
+      {/* Tipo de Cobrança */}
       <div>
-        <label className="block text-[11px] font-medium text-text-dim uppercase tracking-wider mb-2">Tipo de Cobrança</label>
+        <label className="block text-[11px] font-medium text-text-dim uppercase tracking-wider mb-2">Periodicidade das Parcelas</label>
         <div className="grid grid-cols-4 gap-2">
           {BILLING_TYPES.map(bt => (
-            <button key={bt.id} type="button" onClick={() => setForm(f => ({ ...f, billingType: bt.id }))}
+            <button key={bt.id} type="button"
+              onClick={() => setForm(f => ({ ...f, billingType: bt.id, durationMonths: '' }))}
               className={`py-2 rounded-lg text-xs font-semibold border transition-all ${form.billingType === bt.id ? 'bg-accent text-bg border-accent' : 'bg-bg border-border text-text-dim hover:border-accent/40'}`}>
               {bt.label}
             </button>
           ))}
         </div>
+        <p className="text-[10px] text-text-dim mt-1.5">
+          {form.billingType === 'monthly' && 'Parcelas no mesmo dia a cada mês (ex: dia 10 de cada mês)'}
+          {form.billingType === 'biweekly' && 'Parcelas a cada 15 dias corridos (quinzenal)'}
+          {form.billingType === 'weekly' && 'Parcelas a cada 7 dias corridos (semanal)'}
+          {form.billingType === 'daily' && 'Parcelas a cada 1 dia corrido (diária)'}
+        </p>
         <div className="mt-2">
-          <Toggle checked={form.skipNonBusinessDays} onChange={v => setForm(f => ({ ...f, skipNonBusinessDays: v }))} label="Pular dias não úteis — Escolha quais dias pular nas cobranças" />
+          <Toggle checked={form.skipNonBusinessDays} onChange={v => setForm(f => ({ ...f, skipNonBusinessDays: v }))}
+            label="Pular fins de semana e feriados nacionais — avança para o próximo dia útil" />
         </div>
       </div>
 
+      {/* Valores */}
       <div>
         <label className="block text-[11px] font-medium text-text-dim uppercase tracking-wider mb-2">Valores</label>
-        <Field label="Valor Total (R$) *">
+        <Field label="Valor Total do Empréstimo (R$) *">
           <Input required type="number" min="0.01" step="0.01" value={form.totalAmount} onChange={set('totalAmount')} placeholder="0,00" />
         </Field>
         <div className="mt-3 space-y-2">
-          <Toggle checked={form.applyInterestOnValue} onChange={v => setForm(f => ({ ...f, applyInterestOnValue: v }))} label="Adicionar Juros — Aplicar juros sobre o valor" />
+          <Toggle checked={form.applyInterestOnValue} onChange={v => setForm(f => ({ ...f, applyInterestOnValue: v }))}
+            label="Adicionar Juros sobre o Valor — aplicar na geração das parcelas" />
           {form.applyInterestOnValue && (
             <div className="pl-3 border-l-2 border-accent/30">
-              <Field label="Taxa de Juros (% sobre o valor)">
+              <Field label="Taxa de Juros (% sobre o valor total)">
                 <Input type="number" min="0" step="0.01" value={form.interestOnValueRate} onChange={set('interestOnValueRate')} placeholder="0.00" />
               </Field>
             </div>
@@ -239,33 +301,104 @@ const ContractForm = ({ clients, onSave, onClose }: { clients: Client[]; onSave:
         </div>
       </div>
 
-      <Field label="Nº de Parcelas *">
-        <Input required type="number" min="1" max="360" value={form.installmentsCount} onChange={set('installmentsCount')} />
-      </Field>
+      {/* Nº de Parcelas + Duração em Meses */}
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Nº de Parcelas *">
+          <Input required type="number" min="1" max="9999" value={form.installmentsCount} onChange={set('installmentsCount')} />
+        </Field>
+        <Field label={`Duração em Meses ${form.billingType !== 'monthly' ? '(aprox.)' : ''}`}>
+          <Input
+            type="number" min="1" max="360"
+            value={form.durationMonths}
+            onChange={handleMonthsChange}
+            placeholder={form.billingType === 'monthly' ? 'Ex: 12' : 'Ex: 6'}
+          />
+          <p className="text-[10px] text-text-dim mt-1">
+            {form.billingType === 'monthly' && '1 mês = 1 parcela mensal'}
+            {form.billingType === 'biweekly' && '1 mês ≈ 2 parcelas quinzenais'}
+            {form.billingType === 'weekly' && '1 mês ≈ 4 parcelas semanais'}
+            {form.billingType === 'daily' && '1 mês ≈ 30 parcelas diárias'}
+          </p>
+        </Field>
+      </div>
 
+      {/* Juros por Atraso */}
       <div>
         <label className="block text-[11px] font-medium text-text-dim uppercase tracking-wider mb-2">Juros por Atraso</label>
-        <Toggle checked={form.applyLateInterest} onChange={v => setForm(f => ({ ...f, applyLateInterest: v }))} label="Cobrar juros por dia de atraso no pagamento" />
+        <Toggle checked={form.applyLateInterest} onChange={v => setForm(f => ({ ...f, applyLateInterest: v }))}
+          label="Cobrar juros por dia de atraso no pagamento" />
         {form.applyLateInterest && (
-          <div className="mt-2 pl-3 border-l-2 border-danger/30">
-            <Field label="Taxa de Juros/dia (%)">
-              <Input required type="number" min="0" step="0.01" value={form.lateInterestRate} onChange={set('lateInterestRate')} />
-            </Field>
+          <div className="mt-2 space-y-2">
+            <div className="pl-3 border-l-2 border-danger/30 space-y-2">
+              <Field label="Taxa de Juros/dia (%)">
+                <Input required type="number" min="0" step="0.01" value={form.lateInterestRate} onChange={set('lateInterestRate')} />
+              </Field>
+            </div>
+            {/* Tipo de juros */}
+            <div>
+              <p className="text-[11px] font-medium text-text-dim uppercase tracking-wider mb-2">Modalidade dos Juros</p>
+              <div className="grid grid-cols-2 gap-2">
+                {([
+                  { id: 'compound', label: 'Composto', desc: 'Juros sobre juros — cresce exponencialmente. Padrão bancário.' },
+                  { id: 'simple', label: 'Simples', desc: 'Juros sobre o principal apenas — cresce linearmente.' },
+                ] as const).map(opt => (
+                  <button key={opt.id} type="button"
+                    onClick={() => setForm(f => ({ ...f, interestType: opt.id }))}
+                    className={`p-3 rounded-lg text-left border transition-all ${form.interestType === opt.id ? 'bg-accent/10 border-accent text-accent' : 'bg-bg border-border text-text-dim hover:border-accent/40'}`}>
+                    <div className="font-bold text-xs">{opt.label}</div>
+                    <div className="text-[10px] opacity-70 mt-0.5 leading-tight">{opt.desc}</div>
+                  </button>
+                ))}
+              </div>
+              {/* Simulação de juros */}
+              {amount > 0 && parseFloat(form.lateInterestRate) > 0 && (
+                <div className="mt-2 bg-bg border border-border rounded-lg p-3 text-[10px] text-text-dim space-y-1">
+                  <p className="font-bold text-text-dim uppercase tracking-wider mb-1">Simulação de atraso sobre 1 parcela (R$ {installAmt})</p>
+                  {[7, 15, 30].map(days => {
+                    const p = parseFloat(installAmt);
+                    const r = parseFloat(form.lateInterestRate) / 100;
+                    const interest = form.interestType === 'simple'
+                      ? p * r * days
+                      : p * (Math.pow(1 + r, days) - 1);
+                    return (
+                      <div key={days} className="flex justify-between">
+                        <span>{days} dias de atraso</span>
+                        <span className="text-danger font-mono">+R$ {interest.toFixed(2)} → Total R$ {(p + interest).toFixed(2)}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>
 
+      {/* Datas */}
       <div>
         <label className="block text-[11px] font-medium text-text-dim uppercase tracking-wider mb-2">Datas</label>
         <div className="space-y-3">
-          <Field label="Data de Início">
+          <Field label="Data de Início do Contrato">
             <Input type="date" value={form.startDate} onChange={set('startDate')} />
-            <p className="text-[10px] text-text-dim mt-1">Data de referência do contrato. Não afeta os vencimentos.</p>
           </Field>
-          <Field label="Primeira Data de Pagamento *">
+          <Field label="1ª Data de Vencimento *">
             <Input required type="date" value={form.firstPaymentDate} onChange={set('firstPaymentDate')} />
-            <p className="text-[10px] text-text-dim mt-1">Escolha a data do primeiro pagamento. As próximas parcelas serão no mesmo dia de cada mês.</p>
           </Field>
+          {/* Prévia dos vencimentos */}
+          {form.firstPaymentDate && count >= 1 && (
+            <div className="bg-accent/5 border border-accent/10 rounded-lg p-3 text-[10px]">
+              <p className="font-bold text-accent uppercase tracking-wider mb-1.5">Prévia dos primeiros vencimentos</p>
+              <div className="space-y-0.5">
+                {previewDates().map((d, i) => (
+                  <div key={i} className="flex gap-2 text-text-dim">
+                    <span className="text-accent/60">#{i + 1}</span>
+                    <span className="font-mono">{d}</span>
+                  </div>
+                ))}
+                {count > 3 && <div className="text-text-dim/50">...e mais {count - 3} parcela(s)</div>}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -283,11 +416,12 @@ const ContractForm = ({ clients, onSave, onClose }: { clients: Client[]; onSave:
         <div className="bg-accent/5 border border-accent/20 rounded-lg p-3 text-xs text-text-dim">
           <span className="text-accent font-bold">{count}x</span> de <span className="text-text-main font-bold">R$ {installAmt}</span>
           {form.applyInterestOnValue && <span className="ml-2 text-warning">· {interestRate}% juros sobre valor</span>}
-          {form.applyLateInterest && <span className="ml-2 text-text-dim">· {form.lateInterestRate}%/dia sobre atrasos</span>}
+          {form.applyLateInterest && <span className="ml-2 text-text-dim">· {form.lateInterestRate}%/dia ({form.interestType === 'compound' ? 'composto' : 'simples'})</span>}
+          <span className="ml-2 text-text-dim">· {form.billingType === 'monthly' ? 'mensal' : form.billingType === 'biweekly' ? 'quinzenal' : form.billingType === 'weekly' ? 'semanal' : 'diária'}</span>
         </div>
       )}
       <div className="flex gap-3 pt-2">
-        <Btn type="submit">Salvar</Btn>
+        <Btn type="submit">Salvar Contrato</Btn>
         <Btn type="button" variant="ghost" onClick={onClose}>Cancelar</Btn>
       </div>
     </form>
