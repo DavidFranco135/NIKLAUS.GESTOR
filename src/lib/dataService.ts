@@ -44,6 +44,7 @@ export interface Installment {
   status: PaymentStatus;
   paidAt?: string;
   interest?: number;
+  interestPaid?: number; // juros efetivamente cobrado no momento do pagamento
 }
 
 export interface EnrichedInstallment extends Installment {
@@ -537,20 +538,37 @@ class DataService {
 
   async markInstallmentPaid(id: string) {
     const paidAt = new Date().toISOString();
+
+    // Calcula e salva o juro cobrado no momento exato do pagamento
+    const inst = this.installments.find(i => i.id === id);
+    const contract = inst ? this.contracts.find(c => c.id === inst.contractId) : undefined;
+    let interestPaid = 0;
+    if (inst && inst.status !== 'paid') {
+      const dueDate = new Date(inst.dueDate + 'T00:00:00');
+      const daysLate = Math.max(0, differenceInDays(new Date(), dueDate));
+      if (daysLate > 0 && (contract?.lateInterestRate ?? 0) > 0) {
+        interestPaid = this.calculateInterest(
+          inst.amount, daysLate,
+          contract!.lateInterestRate,
+          contract?.interestType ?? 'compound',
+        );
+      }
+    }
+
     this.installments = this.installments.map(i =>
-      i.id === id ? { ...i, status: 'paid', paidAt } : i,
+      i.id === id ? { ...i, status: 'paid', paidAt, interestPaid } : i,
     );
     this.notify();
     const user = await this.getCurrentUser();
     if (user) {
-      try { await updateDoc(doc(db, 'users', user.uid, 'installments', id), { status: 'paid', paidAt }); }
+      try { await updateDoc(doc(db, 'users', user.uid, 'installments', id), { status: 'paid', paidAt, interestPaid }); }
       catch (e) { console.error('[markPaid]', e); }
     }
-    const inst = this.installments.find(i => i.id === id);
-    if (inst) {
-      const siblings = this.installments.filter(i => i.contractId === inst.contractId);
+    const updatedInst = this.installments.find(i => i.id === id);
+    if (updatedInst) {
+      const siblings = this.installments.filter(i => i.contractId === updatedInst.contractId);
       if (siblings.every(i => i.status === 'paid')) {
-        await this.updateContractStatus(inst.contractId, 'completed');
+        await this.updateContractStatus(updatedInst.contractId, 'completed');
       }
     }
   }
@@ -582,16 +600,29 @@ class DataService {
   getStats() {
     const enriched = this.getEnrichedInstallments();
     const activeContracts = this.contracts.filter(c => c.status === 'active').length;
-    const totalValue = enriched.reduce((a, i) => a + i.amount, 0);
-    const received = enriched.filter(i => i.status === 'paid').reduce((a, i) => a + i.amount, 0);
-    const overdueItems = enriched.filter(i => i.status === 'overdue');
-    const overdue = overdueItems.reduce((a, i) => a + i.totalDue, 0);
-    const pending = enriched.filter(i => i.status === 'pending').reduce((a, i) => a + i.amount, 0);
-    const open = pending + overdue;
-    const totalInterest = enriched.reduce((a, i) => a + i.computedInterest, 0);
+
+    const totalValue    = enriched.reduce((a, i) => a + i.amount, 0);
+    const received      = enriched.filter(i => i.status === 'paid').reduce((a, i) => a + i.amount, 0);
+    const overdueItems  = enriched.filter(i => i.status === 'overdue');
+    const overdue       = overdueItems.reduce((a, i) => a + i.totalDue, 0);
+    const pending       = enriched.filter(i => i.status === 'pending').reduce((a, i) => a + i.amount, 0);
+    const open          = pending + overdue;
+
+    // Juros efetivamente cobrado nas parcelas pagas (salvo no campo interestPaid)
+    const interestReceived = this.installments
+      .filter(i => i.status === 'paid')
+      .reduce((a, i) => a + (i.interestPaid ?? 0), 0);
+
+    // Juros acumulado atual nas parcelas em atraso (ainda não recebido)
+    const interestPending = overdueItems.reduce((a, i) => a + i.computedInterest, 0);
+
+    // Total de juros = recebido + pendente em atraso
+    const totalInterest = parseFloat((interestReceived + interestPending).toFixed(2));
+
     return {
       activeContracts, totalValue, received, overdue, open,
-      pending, totalInterest, totalClients: this.clients.length,
+      pending, totalInterest, interestReceived, interestPending,
+      totalClients: this.clients.length,
       overdueCount: overdueItems.length,
     };
   }
@@ -606,11 +637,13 @@ class DataService {
       const s = new Date(month.getFullYear(), month.getMonth(), 1);
       const e = new Date(month.getFullYear(), month.getMonth() + 1, 0);
       const mi = this.installments.filter(i => { const d = new Date(i.dueDate); return d >= s && d <= e; });
+      const paidInsts = mi.filter(i => i.status === 'paid');
       return {
         name: format(month, 'MMM'),
-        receita: mi.filter(i => i.status === 'paid').reduce((a, c) => a + c.amount, 0),
+        receita:  paidInsts.reduce((a, c) => a + c.amount, 0),
         previsto: mi.reduce((a, c) => a + c.amount, 0),
         atrasado: mi.filter(i => i.status === 'overdue').reduce((a, c) => a + c.amount, 0),
+        juros:    paidInsts.reduce((a, c) => a + (c.interestPaid ?? 0), 0),
       };
     });
   }
