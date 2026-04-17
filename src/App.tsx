@@ -1471,10 +1471,10 @@ export default function App() {
           </nav>
           <div className="mt-auto">
             <div className="bg-white/[0.02] border border-border p-3 rounded-lg mb-4 text-[11px]">
-              <p className="text-text-dim mb-1 opacity-60">Firebase Cloud</p>
+              <p className="text-text-dim mb-1 opacity-60">Produzido Por</p>
               <div className="flex items-center gap-2">
                 <div className="w-1.5 h-1.5 bg-accent rounded-full shadow-[0_0_8px_rgba(16,185,129,0.5)] animate-pulse" />
-                <span className="text-text-dim font-mono">niklausgestor.app</span>
+                <span className="text-text-dim font-mono">NIKLAUS®</span>
               </div>
             </div>
             <button onClick={handleLogout} className="w-full flex items-center gap-3 px-3 py-2 text-xs font-medium text-text-dim hover:text-danger transition-colors text-left">
