@@ -1,14 +1,13 @@
-import { format, addMonths } from 'date-fns';
-import { 
-  collection, 
-  addDoc, 
-  onSnapshot, 
-  query, 
-  orderBy,
+import { format, addMonths, differenceInDays } from 'date-fns';
+import {
+  collection,
+  addDoc,
+  onSnapshot,
   doc,
-  setDoc,
   writeBatch,
-  getDocFromServer
+  getDocFromServer,
+  updateDoc,
+  deleteDoc,
 } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 
@@ -23,23 +22,27 @@ enum OperationType {
   WRITE = 'write',
 }
 
-interface FirestoreErrorInfo {
-  error: string;
-  operationType: OperationType;
-  path: string | null;
-  authInfo: {
-    userId: string | undefined;
-    email: string | null | undefined;
-    emailVerified: boolean | undefined;
-    isAnonymous: boolean | undefined;
-    tenantId: string | null | undefined;
-    providerInfo: {
-      providerId: string;
-      displayName: string | null;
-      email: string | null;
-      photoUrl: string | null;
-    }[];
-  }
+export interface AppSettings {
+  compoundInterestRate: number;   // % ao dia (ex: 0.5 = 0,5%/dia)
+  graceDays: number;               // dias de carência antes de cobrar juros
+  whatsappTemplate: string;
+  whatsappOverdueTemplate: string;
+  companyName: string;
+  ownerPhone: string;              // Número do credor para whatsapp
+}
+
+export interface SubLogin {
+  id: string;
+  name: string;
+  email: string;
+  role: 'admin' | 'operator' | 'viewer';
+  canAddClients: boolean;
+  canEditClients: boolean;
+  canDeleteClients: boolean;
+  canAddContracts: boolean;
+  canMarkPaid: boolean;
+  canViewReports: boolean;
+  createdAt: string;
 }
 
 export interface Installment {
@@ -53,15 +56,26 @@ export interface Installment {
   interest?: number;
 }
 
+export interface EnrichedInstallment extends Installment {
+  computedInterest: number;
+  daysLate: number;
+  totalDue: number;
+  clientName: string;
+  contractDescription: string;
+  clientPhone: string;
+  clientId: string;
+}
+
 export interface Contract {
   id: string;
   clientId: string;
   description: string;
   totalAmount: number;
   installmentsCount: number;
+  firstPaymentDate: string;
   startDate: string;
   status: 'active' | 'completed' | 'cancelled';
-  lateInterestRate: number; // % por dia
+  lateInterestRate: number; // % por dia (override; 0 = usa config global)
 }
 
 export interface Client {
@@ -69,120 +83,178 @@ export interface Client {
   name: string;
   email: string;
   phone: string;
-  document: string; // CPF/CNPJ
+  document: string;
   address: string;
 }
 
-// Initial Mock Data
-const INITIAL_CLIENTS: Client[] = [
-  { id: '1', name: 'Camila Pimentel da Silva', email: 'camila@email.com', phone: '(11) 98888-7777', document: '123.456.789-00', address: 'Rua das Flores, 123' },
-  { id: '2', name: 'Carlene Dos Santos', email: 'carlene@email.com', phone: '(11) 97777-6666', document: '234.567.890-11', address: 'Av. Paulista, 500' },
-  { id: '3', name: 'Cleber Mendonça Gomes', email: 'cleber@email.com', phone: '(11) 96666-5555', document: '345.678.901-22', address: 'Rua Chile, 45' },
-];
-
-const INITIAL_CONTRACTS: Contract[] = [
-  { id: 'c1', clientId: '1', description: 'Empréstimo de R$ 500,00', totalAmount: 500, installmentsCount: 2, startDate: '2026-03-20', status: 'active', lateInterestRate: 0.5 },
-  { id: 'c2', clientId: '2', description: 'Serviço de Consultoria', totalAmount: 2400, installmentsCount: 12, startDate: '2026-01-10', status: 'active', lateInterestRate: 0.5 },
-];
-
-const INITIAL_INSTALLMENTS: Installment[] = [
-  { id: 'i1', contractId: 'c1', number: 1, amount: 250, dueDate: '2026-04-20', status: 'pending' },
-  { id: 'i2', contractId: 'c1', number: 2, amount: 250, dueDate: '2026-05-20', status: 'pending' },
-  { id: 'i3', contractId: 'c2', number: 1, amount: 200, dueDate: '2026-02-10', status: 'paid', paidAt: '2026-02-09' },
-  { id: 'i4', contractId: 'c2', number: 2, amount: 200, dueDate: '2026-03-10', status: 'overdue', interest: 15 },
-  { id: 'i5', contractId: 'c2', number: 3, amount: 200, dueDate: '2026-04-10', status: 'overdue', interest: 5 },
-];
+const DEFAULT_SETTINGS: AppSettings = {
+  compoundInterestRate: 0.5,
+  graceDays: 0,
+  whatsappTemplate:
+    'Olá {nome}! Lembramos que sua parcela de R$ {valor} vence em {data}. Por favor, realize o pagamento em dia. Obrigado!',
+  whatsappOverdueTemplate:
+    'Olá {nome}! Sua parcela de R$ {valor} está em atraso há {dias} dias. Total com juros: R$ {total}. Entre em contato para regularizar.',
+  companyName: 'Niklaus Gestor',
+  ownerPhone: '',
+};
 
 class DataService {
   private clients: Client[] = [];
   private contracts: Contract[] = [];
   private installments: Installment[] = [];
   private listeners: (() => void)[] = [];
-
   private isFirebaseAccessible = true;
 
   constructor() {
-    // Initial sync from localStorage (fallback)
     this.loadFromLocal();
-
-    // Initialize Firebase listeners
     this.initFirebase();
   }
 
-  private loadFromLocal() {
-    const savedClients = localStorage.getItem('niklaus_clients');
-    const savedContracts = localStorage.getItem('niklaus_contracts');
-    const savedInstallments = localStorage.getItem('niklaus_installments');
+  // ─── Settings ───────────────────────────────────────────────────────────────
 
-    if (savedClients) this.clients = JSON.parse(savedClients);
-    if (savedContracts) this.contracts = JSON.parse(savedContracts);
-    if (savedInstallments) this.installments = JSON.parse(savedInstallments);
+  getSettings(): AppSettings {
+    try {
+      const saved = localStorage.getItem('niklaus_settings');
+      return saved ? { ...DEFAULT_SETTINGS, ...JSON.parse(saved) } : DEFAULT_SETTINGS;
+    } catch {
+      return DEFAULT_SETTINGS;
+    }
+  }
+
+  updateSettings(data: Partial<AppSettings>) {
+    const current = this.getSettings();
+    const updated = { ...current, ...data };
+    localStorage.setItem('niklaus_settings', JSON.stringify(updated));
+    this.notify();
+  }
+
+  // ─── Sub-Logins ──────────────────────────────────────────────────────────────
+
+  getSubLogins(): SubLogin[] {
+    try {
+      const saved = localStorage.getItem('niklaus_sublogins');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  addSubLogin(data: Omit<SubLogin, 'id' | 'createdAt'>): SubLogin {
+    const newSub: SubLogin = {
+      ...data,
+      id: `sub-${Date.now()}`,
+      createdAt: new Date().toISOString(),
+    };
+    const list = this.getSubLogins();
+    list.push(newSub);
+    localStorage.setItem('niklaus_sublogins', JSON.stringify(list));
+    this.notify();
+    return newSub;
+  }
+
+  updateSubLogin(id: string, data: Partial<SubLogin>) {
+    const list = this.getSubLogins().map(s => (s.id === id ? { ...s, ...data } : s));
+    localStorage.setItem('niklaus_sublogins', JSON.stringify(list));
+    this.notify();
+  }
+
+  deleteSubLogin(id: string) {
+    const list = this.getSubLogins().filter(s => s.id !== id);
+    localStorage.setItem('niklaus_sublogins', JSON.stringify(list));
+    this.notify();
+  }
+
+  // ─── Compound Interest ───────────────────────────────────────────────────────
+
+  calculateCompoundInterest(
+    principal: number,
+    daysLate: number,
+    dailyRate?: number,
+  ): number {
+    const settings = this.getSettings();
+    const rate = dailyRate ?? settings.compoundInterestRate;
+    const grace = settings.graceDays;
+    const effectiveDays = Math.max(0, daysLate - grace);
+    if (effectiveDays <= 0 || rate <= 0) return 0;
+    const total = principal * Math.pow(1 + rate / 100, effectiveDays);
+    return parseFloat((total - principal).toFixed(2));
+  }
+
+  // ─── Enriched Installments ───────────────────────────────────────────────────
+
+  getEnrichedInstallments(): EnrichedInstallment[] {
+    const today = new Date();
+    return this.installments.map(inst => {
+      const contract = this.contracts.find(c => c.id === inst.contractId);
+      const client = contract ? this.clients.find(c => c.id === contract.clientId) : undefined;
+      const dueDate = new Date(inst.dueDate + 'T00:00:00');
+      const daysLate = Math.max(0, differenceInDays(today, dueDate));
+      let computedStatus = inst.status;
+      if (inst.status !== 'paid' && daysLate > 0) computedStatus = 'overdue';
+      const contractRate = contract?.lateInterestRate ?? 0;
+      const interest =
+        computedStatus === 'overdue'
+          ? this.calculateCompoundInterest(inst.amount, daysLate, contractRate || undefined)
+          : 0;
+      return {
+        ...inst,
+        status: computedStatus,
+        computedInterest: interest,
+        daysLate,
+        totalDue: parseFloat((inst.amount + interest).toFixed(2)),
+        clientName: client?.name ?? '—',
+        clientPhone: client?.phone ?? '',
+        clientId: client?.id ?? '',
+        contractDescription: contract?.description ?? '—',
+      };
+    });
+  }
+
+  // ─── Firebase / local bootstrap ──────────────────────────────────────────────
+
+  private loadFromLocal() {
+    const sc = localStorage.getItem('niklaus_clients');
+    const sco = localStorage.getItem('niklaus_contracts');
+    const si = localStorage.getItem('niklaus_installments');
+    if (sc) this.clients = JSON.parse(sc);
+    if (sco) this.contracts = JSON.parse(sco);
+    if (si) this.installments = JSON.parse(si);
   }
 
   private initFirebase() {
     this.testConnection();
-
     const handleError = (error: any, path: string) => {
       if (error.code === 'permission-denied') {
         if (this.isFirebaseAccessible) {
-          console.warn(`[Firebase] Acesso negado a "${path}". Verifique suas Security Rules no console. Voltando para modo local offline.`);
+          console.warn(`[Firebase] Acesso negado a "${path}". Modo offline ativado.`);
           this.isFirebaseAccessible = false;
         }
       } else {
-        this.handleFirestoreError(error, OperationType.LIST, path);
+        console.error(`[Firestore] ${path}:`, error.message);
       }
     };
-
-    // Sync Clients
-    onSnapshot(collection(db, 'clients'), (snapshot) => {
-      this.clients = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Client));
+    onSnapshot(collection(db, 'clients'), s => {
+      this.clients = s.docs.map(d => ({ id: d.id, ...d.data() } as Client));
       this.notify();
-    }, (err) => handleError(err, 'clients'));
-
-    // Sync Contracts
-    onSnapshot(collection(db, 'contracts'), (snapshot) => {
-      this.contracts = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Contract));
+    }, e => handleError(e, 'clients'));
+    onSnapshot(collection(db, 'contracts'), s => {
+      this.contracts = s.docs.map(d => ({ id: d.id, ...d.data() } as Contract));
       this.notify();
-    }, (err) => handleError(err, 'contracts'));
-
-    // Sync Installments
-    onSnapshot(collection(db, 'installments'), (snapshot) => {
-      this.installments = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Installment));
+    }, e => handleError(e, 'contracts'));
+    onSnapshot(collection(db, 'installments'), s => {
+      this.installments = s.docs.map(d => ({ id: d.id, ...d.data() } as Installment));
       this.notify();
-    }, (err) => handleError(err, 'installments'));
+    }, e => handleError(e, 'installments'));
   }
 
   private async testConnection() {
     try {
       await getDocFromServer(doc(db, 'test', 'connection'));
     } catch (error) {
-      if(error instanceof Error && error.message.includes('the client is offline')) {
-        console.error("Please check your Firebase configuration. The client is offline.");
+      if (error instanceof Error && error.message.includes('offline')) {
+        console.warn('[Firebase] Cliente offline — usando modo local.');
       }
     }
-  }
-
-  private handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
-    const errInfo: FirestoreErrorInfo = {
-      error: error instanceof Error ? error.message : String(error),
-      authInfo: {
-        userId: auth.currentUser?.uid,
-        email: auth.currentUser?.email,
-        emailVerified: auth.currentUser?.emailVerified,
-        isAnonymous: auth.currentUser?.isAnonymous,
-        tenantId: auth.currentUser?.tenantId,
-        providerInfo: auth.currentUser?.providerData.map(provider => ({
-          providerId: provider.providerId,
-          displayName: provider.displayName,
-          email: provider.email,
-          photoUrl: provider.photoURL
-        })) || []
-      },
-      operationType,
-      path
-    };
-    console.error('Firestore Error: ', JSON.stringify(errInfo));
-    // We don't throw here to avoid crashing the data service, but we log it correctly for diagnosis
   }
 
   private notify() {
@@ -198,113 +270,165 @@ class DataService {
 
   subscribe(listener: () => void) {
     this.listeners.push(listener);
-    return () => {
-      this.listeners = this.listeners.filter(l => l !== listener);
-    };
+    return () => { this.listeners = this.listeners.filter(l => l !== listener); };
   }
+
+  // ─── Getters ─────────────────────────────────────────────────────────────────
 
   getClients() { return this.clients; }
   getContracts() { return this.contracts; }
   getInstallments() { return this.installments; }
 
+  // ─── Client CRUD ─────────────────────────────────────────────────────────────
+
   async addClient(client: Omit<Client, 'id'>) {
     if (!this.isFirebaseAccessible) {
-      const newClient = { ...client, id: Math.random().toString(36).substr(2, 9) };
-      this.clients.push(newClient);
-      this.notify();
-      return newClient;
+      const nc = { ...client, id: `cl-${Date.now()}` };
+      this.clients.push(nc); this.notify(); return nc;
     }
-
     try {
-      const docRef = await addDoc(collection(db, 'clients'), client);
-      return { ...client, id: docRef.id };
-    } catch (error) {
-      this.handleFirestoreError(error, OperationType.CREATE, 'clients');
-      // Fallback
-      const newClient = { ...client, id: Math.random().toString(36).substr(2, 9) };
-      this.clients.push(newClient);
-      this.notify();
-      return newClient;
+      const ref = await addDoc(collection(db, 'clients'), client);
+      return { ...client, id: ref.id };
+    } catch (e) {
+      console.error('[addClient]', e);
+      const nc = { ...client, id: `cl-${Date.now()}` };
+      this.clients.push(nc); this.notify(); return nc;
     }
   }
+
+  async updateClient(id: string, data: Partial<Client>) {
+    this.clients = this.clients.map(c => c.id === id ? { ...c, ...data } : c);
+    this.notify();
+    if (this.isFirebaseAccessible) {
+      try { await updateDoc(doc(db, 'clients', id), data as any); } catch (e) { console.error('[updateClient]', e); }
+    }
+  }
+
+  async deleteClient(id: string) {
+    // Delete related contracts + installments
+    const contractIds = this.contracts.filter(c => c.clientId === id).map(c => c.id);
+    this.installments = this.installments.filter(i => !contractIds.includes(i.contractId));
+    this.contracts = this.contracts.filter(c => c.clientId !== id);
+    this.clients = this.clients.filter(c => c.id !== id);
+    this.notify();
+    if (this.isFirebaseAccessible) {
+      try {
+        await deleteDoc(doc(db, 'clients', id));
+        for (const cid of contractIds) {
+          await deleteDoc(doc(db, 'contracts', cid));
+          // Firebase installments deletion would require a query; handled locally
+        }
+      } catch (e) { console.error('[deleteClient]', e); }
+    }
+  }
+
+  // ─── Contract CRUD ───────────────────────────────────────────────────────────
 
   async addContract(contract: Omit<Contract, 'id'>) {
+    const installmentAmount = parseFloat((contract.totalAmount / contract.installmentsCount).toFixed(2));
+    const baseDate = new Date(contract.firstPaymentDate + 'T00:00:00');
+
     if (!this.isFirebaseAccessible) {
-      const newContract = { ...contract, id: `c-${Math.random().toString(36).substr(2, 5)}` };
-      this.contracts.push(newContract);
-      
-      const installments: Installment[] = [];
-      const installmentAmount = contract.totalAmount / contract.installmentsCount;
-      for (let i = 1; i <= contract.installmentsCount; i++) {
-        installments.push({
-          id: `i-${Math.random().toString(36).substr(2, 5)}`,
-          contractId: newContract.id,
-          number: i,
-          amount: installmentAmount,
-          dueDate: format(addMonths(new Date(contract.startDate), i), 'yyyy-MM-dd'),
-          status: 'pending'
+      const nc = { ...contract, id: `c-${Date.now()}` };
+      this.contracts.push(nc);
+      for (let i = 0; i < contract.installmentsCount; i++) {
+        this.installments.push({
+          id: `i-${Date.now()}-${i}`,
+          contractId: nc.id, number: i + 1, amount: installmentAmount,
+          dueDate: format(addMonths(baseDate, i), 'yyyy-MM-dd'), status: 'pending',
         });
       }
-      this.installments.push(...installments);
-      this.notify();
-      return newContract;
+      this.notify(); return nc;
     }
 
     try {
-      const contractRef = await addDoc(collection(db, 'contracts'), contract);
-      const contractId = contractRef.id;
-      
+      const cRef = await addDoc(collection(db, 'contracts'), contract);
       const batch = writeBatch(db);
-      const installmentAmount = contract.totalAmount / contract.installmentsCount;
-      
-      for (let i = 1; i <= contract.installmentsCount; i++) {
-        const instData = {
-          contractId,
-          number: i,
-          amount: installmentAmount,
-          dueDate: format(addMonths(new Date(contract.startDate), i), 'yyyy-MM-dd'),
-          status: 'pending' as PaymentStatus
-        };
-        const instRef = doc(collection(db, 'installments'));
-        batch.set(instRef, instData);
-      }
-      
-      await batch.commit();
-      return { ...contract, id: contractId };
-    } catch (error) {
-      this.handleFirestoreError(error, OperationType.WRITE, 'contracts/installments');
-      // Fallback logic
-      const newContract = { ...contract, id: `c-${Math.random().toString(36).substr(2, 5)}` };
-      this.contracts.push(newContract);
-      
-      const installments: Installment[] = [];
-      const installmentAmount = contract.totalAmount / contract.installmentsCount;
-      for (let i = 1; i <= contract.installmentsCount; i++) {
-        installments.push({
-          id: `i-${Math.random().toString(36).substr(2, 5)}`,
-          contractId: newContract.id,
-          number: i,
-          amount: installmentAmount,
-          dueDate: format(addMonths(new Date(contract.startDate), i), 'yyyy-MM-dd'),
-          status: 'pending'
+      for (let i = 0; i < contract.installmentsCount; i++) {
+        const iRef = doc(collection(db, 'installments'));
+        batch.set(iRef, {
+          contractId: cRef.id, number: i + 1, amount: installmentAmount,
+          dueDate: format(addMonths(baseDate, i), 'yyyy-MM-dd'), status: 'pending',
         });
       }
-      this.installments.push(...installments);
-      this.notify();
-      return newContract;
+      await batch.commit();
+      return { ...contract, id: cRef.id };
+    } catch (e) {
+      console.error('[addContract]', e);
+      const nc = { ...contract, id: `c-${Date.now()}` };
+      this.contracts.push(nc);
+      for (let i = 0; i < contract.installmentsCount; i++) {
+        this.installments.push({
+          id: `i-${Date.now()}-${i}`,
+          contractId: nc.id, number: i + 1, amount: installmentAmount,
+          dueDate: format(addMonths(baseDate, i), 'yyyy-MM-dd'), status: 'pending',
+        });
+      }
+      this.notify(); return nc;
     }
   }
 
-  // Analytics Helpers
-  getStats() {
-    const now = new Date();
-    const activeContracts = this.contracts.filter(c => c.status === 'active').length;
-    const totalValue = this.installments.reduce((acc, curr) => acc + curr.amount, 0);
-    const received = this.installments.filter(i => i.status === 'paid').reduce((acc, curr) => acc + curr.amount, 0);
-    const overdue = this.installments.filter(i => i.status === 'overdue').reduce((acc, curr) => acc + curr.amount + (curr.interest || 0), 0);
-    const open = totalValue - received;
+  async deleteContract(id: string) {
+    this.installments = this.installments.filter(i => i.contractId !== id);
+    this.contracts = this.contracts.filter(c => c.id !== id);
+    this.notify();
+    if (this.isFirebaseAccessible) {
+      try { await deleteDoc(doc(db, 'contracts', id)); } catch (e) { console.error('[deleteContract]', e); }
+    }
+  }
 
-    return { activeContracts, totalValue, received, overdue, open };
+  // ─── Installment Updates ─────────────────────────────────────────────────────
+
+  async markInstallmentPaid(id: string) {
+    const paidAt = new Date().toISOString();
+    this.installments = this.installments.map(i =>
+      i.id === id ? { ...i, status: 'paid', paidAt } : i,
+    );
+    this.notify();
+    if (this.isFirebaseAccessible) {
+      try { await updateDoc(doc(db, 'installments', id), { status: 'paid', paidAt }); } catch (e) { console.error('[markPaid]', e); }
+    }
+    // Check if all installments of the contract are paid
+    const inst = this.installments.find(i => i.id === id);
+    if (inst) {
+      const siblings = this.installments.filter(i => i.contractId === inst.contractId);
+      if (siblings.every(i => i.status === 'paid')) {
+        await this.updateContractStatus(inst.contractId, 'completed');
+      }
+    }
+  }
+
+  async markInstallmentPending(id: string) {
+    this.installments = this.installments.map(i =>
+      i.id === id ? { ...i, status: 'pending', paidAt: undefined } : i,
+    );
+    this.notify();
+    if (this.isFirebaseAccessible) {
+      try { await updateDoc(doc(db, 'installments', id), { status: 'pending', paidAt: null }); } catch (e) { console.error('[markPending]', e); }
+    }
+  }
+
+  private async updateContractStatus(id: string, status: Contract['status']) {
+    this.contracts = this.contracts.map(c => c.id === id ? { ...c, status } : c);
+    this.notify();
+    if (this.isFirebaseAccessible) {
+      try { await updateDoc(doc(db, 'contracts', id), { status }); } catch (e) { console.error('[updateContractStatus]', e); }
+    }
+  }
+
+  // ─── Stats ───────────────────────────────────────────────────────────────────
+
+  getStats() {
+    const enriched = this.getEnrichedInstallments();
+    const activeContracts = this.contracts.filter(c => c.status === 'active').length;
+    const totalValue = enriched.reduce((a, i) => a + i.amount, 0);
+    const received = enriched.filter(i => i.status === 'paid').reduce((a, i) => a + i.amount, 0);
+    const overdueItems = enriched.filter(i => i.status === 'overdue');
+    const overdue = overdueItems.reduce((a, i) => a + i.totalDue, 0);
+    const pending = enriched.filter(i => i.status === 'pending').reduce((a, i) => a + i.amount, 0);
+    const open = pending + overdue;
+    const totalInterest = enriched.reduce((a, i) => a + i.computedInterest, 0);
+    return { activeContracts, totalValue, received, overdue, open, pending, totalInterest, totalClients: this.clients.length, overdueCount: overdueItems.length };
   }
 
   getRevenueData() {
@@ -313,22 +437,15 @@ class DataService {
     for (let i = 5; i >= 0; i--) {
       months.push(new Date(now.getFullYear(), now.getMonth() - i, 1));
     }
-
     return months.map(month => {
-      const monthStr = format(month, 'MMM');
-      const start = new Date(month.getFullYear(), month.getMonth(), 1);
-      const end = new Date(month.getFullYear(), month.getMonth() + 1, 0);
-
-      const monthInstallments = this.installments.filter(i => {
-        const d = new Date(i.dueDate);
-        return d >= start && d <= end;
-      });
-
+      const s = new Date(month.getFullYear(), month.getMonth(), 1);
+      const e = new Date(month.getFullYear(), month.getMonth() + 1, 0);
+      const mi = this.installments.filter(i => { const d = new Date(i.dueDate); return d >= s && d <= e; });
       return {
-        name: monthStr,
-        receita: monthInstallments.filter(i => i.status === 'paid').reduce((acc, curr) => acc + curr.amount, 0),
-        previsto: monthInstallments.reduce((acc, curr) => acc + curr.amount, 0),
-        atrasado: monthInstallments.filter(i => i.status === 'overdue').reduce((acc, curr) => acc + curr.amount, 0),
+        name: format(month, 'MMM'),
+        receita: mi.filter(i => i.status === 'paid').reduce((a, c) => a + c.amount, 0),
+        previsto: mi.reduce((a, c) => a + c.amount, 0),
+        atrasado: mi.filter(i => i.status === 'overdue').reduce((a, c) => a + c.amount, 0),
       };
     });
   }
