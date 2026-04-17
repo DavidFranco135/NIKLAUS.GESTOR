@@ -440,11 +440,10 @@ const DashboardView = ({ stats, revenueData, onNavigate }: any) => (
     </div>
 
     {/* Cards de juros */}
-    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
       {[
         { label: 'Juros Recebidos', value: `R$ ${fmt(stats.interestReceived)}`, color: 'text-accent', sub: 'Cobrado e pago', icon: CheckCircle2, filter: 'paid' },
         { label: 'Juros em Atraso', value: `R$ ${fmt(stats.interestPending)}`, color: 'text-danger', sub: 'Acumulado nas atrasadas', icon: AlertCircle, filter: 'overdue' },
-        { label: 'Juros Projetado 30d', value: `R$ ${fmt(stats.projectedInterest)}`, color: 'text-warning', sub: 'Se pendentes ficarem 30d em atraso', icon: TrendingUp, filter: undefined },
         { label: 'Total de Juros', value: `R$ ${fmt(stats.totalInterest)}`, color: 'text-warning', sub: 'Recebidos + em atraso', icon: TrendingUp, filter: undefined },
       ].map(s => (
         <div key={s.label} className={`panel-card p-4 flex items-center gap-4 ${s.filter ? 'cursor-pointer hover:border-accent/40 transition-all' : ''}`} onClick={() => s.filter && onNavigate('due-dates', s.filter)}>
@@ -457,6 +456,9 @@ const DashboardView = ({ stats, revenueData, onNavigate }: any) => (
         </div>
       ))}
     </div>
+
+    {/* Painel de juros projetados por período */}
+    <ProjectedInterestPanel stats={stats} />
 
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
       <div className="lg:col-span-2 panel-card p-6">
@@ -745,6 +747,134 @@ const ClientsView = ({ clients, contracts, onRefresh }: { clients: Client[]; con
   );
 };
 
+// ─── ProjectedInterestPanel ──────────────────────────────────────────────────
+
+const PROJECTION_PERIODS = [
+  { key: 'day1',   label: '1 Dia',    days: 1   },
+  { key: 'day7',   label: '1 Semana', days: 7   },
+  { key: 'day30',  label: '1 Mês',    days: 30  },
+  { key: 'day90',  label: '3 Meses',  days: 90  },
+  { key: 'day180', label: '6 Meses',  days: 180 },
+  { key: 'day365', label: '1 Ano',    days: 365 },
+] as const;
+
+const ProjectedInterestPanel = ({ stats }: { stats: any }) => {
+  const [selected, setSelected] = useState<string>('day30');
+  const selectedPeriod = PROJECTION_PERIODS.find(p => p.key === selected)!;
+  const selectedValue = stats.projected?.[selected as keyof typeof stats.projected] ?? 0;
+  const hasPendingWithInterest = selectedValue > 0 || stats.projected?.day1 > 0;
+
+  return (
+    <div className="panel-card p-5 space-y-4">
+      <div className="flex items-start justify-between flex-wrap gap-2">
+        <div>
+          <h3 className="font-semibold text-sm">Juros Projetados por Período</h3>
+          <p className="text-[11px] text-text-dim mt-0.5">
+            Estimativa de juros se as parcelas pendentes ficarem em atraso pelo período selecionado
+          </p>
+        </div>
+        {!hasPendingWithInterest && (
+          <span className="px-2 py-1 rounded bg-sidebar border border-border text-[10px] text-text-dim">
+            Sem juros configurados ou sem parcelas pendentes
+          </span>
+        )}
+      </div>
+
+      {/* Seletor de período */}
+      <div className="flex flex-wrap gap-1.5">
+        {PROJECTION_PERIODS.map(p => (
+          <button
+            key={p.key}
+            onClick={() => setSelected(p.key)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all ${
+              selected === p.key
+                ? 'bg-warning text-bg border-warning'
+                : 'bg-bg border-border text-text-dim hover:border-warning/40 hover:text-warning'
+            }`}
+          >
+            {p.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Valor em destaque */}
+      <div className="bg-warning/5 border border-warning/20 rounded-xl p-4 flex items-center justify-between">
+        <div>
+          <p className="text-[11px] text-warning/70 uppercase tracking-wider font-bold mb-1">
+            Juros se vencer há {selectedPeriod.label.toLowerCase()}
+          </p>
+          <p className="text-3xl font-black font-mono text-warning">
+            R$ {fmt(selectedValue)}
+          </p>
+          <p className="text-[10px] text-text-dim mt-1.5">
+            sobre R$ {fmt(stats.pending)} em parcelas pendentes com juros configurados
+          </p>
+        </div>
+        <div className="text-4xl opacity-20 font-black text-warning">%</div>
+      </div>
+
+      {/* Tabela comparativa de todos os períodos */}
+      <div className="border border-border rounded-lg overflow-hidden">
+        <div className="px-4 py-2 bg-sidebar border-b border-border">
+          <p className="text-[10px] font-bold text-text-dim uppercase tracking-wider">Comparativo — todos os períodos</p>
+        </div>
+        <div className="divide-y divide-border/30">
+          {PROJECTION_PERIODS.map(p => {
+            const val = stats.projected?.[p.key as keyof typeof stats.projected] ?? 0;
+            const isSelected = p.key === selected;
+            const pct = stats.pending > 0 ? (val / stats.pending) * 100 : 0;
+            return (
+              <button
+                key={p.key}
+                onClick={() => setSelected(p.key)}
+                className={`w-full flex items-center justify-between px-4 py-2.5 transition-colors text-left ${
+                  isSelected ? 'bg-warning/10' : 'hover:bg-white/[0.02]'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <span className={`text-xs font-semibold w-16 ${isSelected ? 'text-warning' : 'text-text-dim'}`}>
+                    {p.label}
+                  </span>
+                  {/* Barra proporcional */}
+                  <div className="w-20 h-1.5 bg-border rounded-full overflow-hidden hidden sm:block">
+                    <div
+                      className="h-full bg-warning rounded-full transition-all"
+                      style={{ width: `${Math.min(100, pct)}%` }}
+                    />
+                  </div>
+                </div>
+                <div className="text-right">
+                  <span className={`text-sm font-bold font-mono ${isSelected ? 'text-warning' : 'text-text-main'}`}>
+                    R$ {fmt(val)}
+                  </span>
+                  {pct > 0 && (
+                    <span className="text-[10px] text-text-dim ml-2">({pct.toFixed(1)}% do principal)</span>
+                  )}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+        {/* Total acumulado se não pagar nenhuma parcela no ano */}
+        <div className="px-4 py-3 bg-danger/5 border-t border-danger/20 flex justify-between items-center">
+          <span className="text-[11px] font-bold text-danger uppercase tracking-wider">
+            Total em atraso atual + projeção 1 ano
+          </span>
+          <span className="text-sm font-black font-mono text-danger">
+            R$ {fmt((stats.interestPending ?? 0) + (stats.projected?.day365 ?? 0))}
+          </span>
+        </div>
+      </div>
+
+      <p className="text-[10px] text-text-dim/60 leading-relaxed">
+        * Projeção calculada sobre o saldo total de parcelas pendentes com juros configurados.
+        Juros simples = linear · Juros compostos = exponencial (acumula sobre o saldo).
+        Valores reais dependem da data de atraso de cada parcela individualmente.
+      </p>
+    </div>
+  );
+};
+
 // ─── ContractEditForm ────────────────────────────────────────────────────────
 
 const ContractEditForm = ({ contract, clients, onSave, onClose }: { contract: Contract; clients: Client[]; onSave: (d: any) => void; onClose: () => void }) => {
@@ -875,6 +1005,9 @@ const ContractsView = ({ contracts, clients, installments, onRefresh, onNavigate
           </div>
         ))}
       </div>
+
+      {/* Painel de juros projetados */}
+      <ProjectedInterestPanel stats={contractStats} />
 
       <div className="panel-card overflow-hidden">
         <div className="p-6 border-b border-border flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
@@ -1166,11 +1299,6 @@ const AnalysisView = ({ revenueData, stats, onNavigate }: any) => (
               <div className="text-lg font-bold font-mono text-danger">R$ {fmt(stats.interestPending)}</div>
               <div className="text-[9px] text-danger/60 mt-0.5">acumulado nas atrasadas</div>
             </div>
-            <div className="col-span-2 bg-warning/5 border border-warning/20 p-3 rounded-lg">
-              <div className="text-[10px] font-bold text-warning uppercase mb-1 tracking-wider">Juros Projetado — se ficarem 30 dias em atraso</div>
-              <div className="text-lg font-bold font-mono text-warning">R$ {fmt(stats.projectedInterest)}</div>
-              <div className="text-[9px] text-warning/60 mt-0.5">estimativa sobre parcelas pendentes com juros configurados</div>
-            </div>
           </div>
         </div>
       </section>
@@ -1192,6 +1320,7 @@ const AnalysisView = ({ revenueData, stats, onNavigate }: any) => (
         ))}
       </div>
     </div>
+    <ProjectedInterestPanel stats={stats} />
   </div>
 );
 
