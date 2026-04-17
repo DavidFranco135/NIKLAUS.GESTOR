@@ -239,8 +239,7 @@ class DataService {
     this.installments = s.docs.map(d => ({ id: d.id, ...d.data() } as Installment));
     this.notify();
   }, e => console.warn('[Firebase] installments read:', e.message));
-}
-    ;
+
     onSnapshot(collection(db, 'clients'), s => {
       this.clients = s.docs.map(d => ({ id: d.id, ...d.data() } as Client));
       this.notify();
