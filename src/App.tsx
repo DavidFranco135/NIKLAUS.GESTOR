@@ -438,10 +438,29 @@ const DashboardView = ({ stats, revenueData, onNavigate }: any) => (
       <StatCard title="Pendente" value={`R$ ${fmt(stats.pending)}`} subValue="Aguardando pagamento" icon={Clock} color="bg-warning text-warning" onClick={() => onNavigate('due-dates', 'pending')} />
       <StatCard title="Em Atraso" value={`R$ ${fmt(stats.overdue)}`} subValue={`${stats.overdueCount} parcelas · R$ ${fmt(stats.totalInterest)} em juros`} icon={AlertCircle} color="bg-danger text-danger" trend={{ value: 0.2, positive: false }} onClick={() => onNavigate('due-dates', 'overdue')} />
     </div>
+
+    {/* Cards de juros */}
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      {[
+        { label: 'Juros Recebidos', value: `R$ ${fmt(stats.interestReceived)}`, color: 'text-accent', sub: 'Cobrado e pago', icon: CheckCircle2, filter: 'paid' },
+        { label: 'Juros em Aberto', value: `R$ ${fmt(stats.interestPending)}`, color: 'text-danger', sub: 'Sobre parcelas em atraso', icon: AlertCircle, filter: 'overdue' },
+        { label: 'Total de Juros', value: `R$ ${fmt(stats.totalInterest)}`, color: 'text-warning', sub: 'Recebidos + pendentes', icon: TrendingUp, filter: undefined },
+      ].map(s => (
+        <div key={s.label} className={`panel-card p-4 flex items-center gap-4 ${s.filter ? 'cursor-pointer hover:border-accent/40 transition-all' : ''}`} onClick={() => s.filter && onNavigate('due-dates', s.filter)}>
+          <div className={`p-2 rounded-lg bg-white/5`}><s.icon size={18} className={s.color} /></div>
+          <div>
+            <p className="text-[10px] text-text-dim uppercase tracking-widest font-medium">{s.label}</p>
+            <p className={`text-lg font-bold ${s.color}`}>{s.value}</p>
+            <p className="text-[10px] text-text-dim">{s.sub}</p>
+          </div>
+        </div>
+      ))}
+    </div>
+
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
       <div className="lg:col-span-2 panel-card p-6">
         <div className="flex justify-between items-center mb-6">
-          <div><h3 className="text-base font-semibold">Desempenho de Receita</h3><p className="text-xs text-text-dim">Comparativo histórico — últimos 6 meses</p></div>
+          <div><h3 className="text-base font-semibold">Desempenho de Receita</h3><p className="text-xs text-text-dim">Últimos 6 meses — principal + juros recebidos</p></div>
         </div>
         <div className="h-[280px] w-full">
           <ResponsiveContainer width="100%" height="100%">
@@ -450,15 +469,31 @@ const DashboardView = ({ stats, revenueData, onNavigate }: any) => (
                 <linearGradient id="colorPrevisto" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="5%" stopColor="#10B981" stopOpacity={0.2} /><stop offset="95%" stopColor="#10B981" stopOpacity={0} />
                 </linearGradient>
+                <linearGradient id="colorJuros" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#F59E0B" stopOpacity={0.3} /><stop offset="95%" stopColor="#F59E0B" stopOpacity={0} />
+                </linearGradient>
               </defs>
               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#2D333E" strokeOpacity={0.5} />
               <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#94A3B8', fontSize: 10 }} dy={10} />
               <YAxis axisLine={false} tickLine={false} tick={{ fill: '#94A3B8', fontSize: 10 }} dx={-10} tickFormatter={v => `R$${v}`} />
-              <Tooltip contentStyle={{ backgroundColor: '#1C1F26', border: '1px solid #2D333E', borderRadius: '8px', fontSize: '12px' }} itemStyle={{ color: '#E2E8F0' }} />
-              <Area type="monotone" dataKey="previsto" stroke="#10B981" fillOpacity={1} fill="url(#colorPrevisto)" strokeWidth={2} />
-              <Area type="monotone" dataKey="receita" stroke="#10B981" fillOpacity={0} strokeWidth={2} strokeDasharray="4 4" opacity={0.5} />
+              <Tooltip contentStyle={{ backgroundColor: '#1C1F26', border: '1px solid #2D333E', borderRadius: '8px', fontSize: '12px' }} itemStyle={{ color: '#E2E8F0' }} formatter={(v: any, name: string) => [`R$ ${fmt(v)}`, name === 'receita' ? 'Recebido' : name === 'previsto' ? 'Previsto' : name === 'juros' ? 'Juros' : name]} />
+              <Area type="monotone" dataKey="previsto" name="previsto" stroke="#10B981" fillOpacity={1} fill="url(#colorPrevisto)" strokeWidth={2} />
+              <Area type="monotone" dataKey="receita" name="receita" stroke="#10B981" fillOpacity={0} strokeWidth={2} strokeDasharray="4 4" opacity={0.7} />
+              <Area type="monotone" dataKey="juros" name="juros" stroke="#F59E0B" fillOpacity={1} fill="url(#colorJuros)" strokeWidth={2} />
             </AreaChart>
           </ResponsiveContainer>
+        </div>
+        {/* Legenda */}
+        <div className="flex gap-4 mt-3 flex-wrap">
+          {[
+            { color: 'bg-accent', label: 'Previsto' },
+            { color: 'bg-accent opacity-60', label: 'Recebido (principal)' },
+            { color: 'bg-warning', label: 'Juros recebidos' },
+          ].map(l => (
+            <div key={l.label} className="flex items-center gap-1.5 text-[10px] text-text-dim">
+              <div className={`w-2 h-2 rounded-full ${l.color}`} />{l.label}
+            </div>
+          ))}
         </div>
       </div>
       <div className="panel-card p-6 flex flex-col">
@@ -466,8 +501,13 @@ const DashboardView = ({ stats, revenueData, onNavigate }: any) => (
         <div className="h-[200px] flex-grow">
           <ResponsiveContainer width="100%" height="100%">
             <PieChart>
-              <Pie data={[{ name: 'Pago', value: stats.received }, { name: 'Pendente', value: stats.pending }, { name: 'Atrasado', value: stats.overdue }]} innerRadius={55} outerRadius={75} paddingAngle={5} dataKey="value">
-                <Cell fill="#10B981" /><Cell fill="#F59E0B" /><Cell fill="#EF4444" />
+              <Pie data={[
+                { name: 'Pago', value: stats.received },
+                { name: 'Pendente', value: stats.pending },
+                { name: 'Atrasado', value: stats.overdue },
+                { name: 'Juros', value: stats.interestPending },
+              ]} innerRadius={55} outerRadius={75} paddingAngle={5} dataKey="value">
+                <Cell fill="#10B981" /><Cell fill="#F59E0B" /><Cell fill="#EF4444" /><Cell fill="#FBBF24" />
               </Pie>
               <Tooltip formatter={(v: any) => `R$ ${fmt(v)}`} contentStyle={{ backgroundColor: '#1C1F26', border: '1px solid #2D333E' }} />
             </PieChart>
@@ -478,6 +518,7 @@ const DashboardView = ({ stats, revenueData, onNavigate }: any) => (
             { label: 'Pago', color: 'bg-accent', val: stats.received, filter: 'paid' },
             { label: 'Pendente', color: 'bg-warning', val: stats.pending, filter: 'pending' },
             { label: 'Atrasado', color: 'bg-danger', val: stats.overdue, filter: 'overdue' },
+            { label: 'Juros em aberto', color: 'bg-yellow-400', val: stats.interestPending, filter: 'overdue' },
           ].map(r => (
             <div key={r.label} className="flex justify-between items-center text-[12px] cursor-pointer hover:bg-white/[0.02] rounded px-1 py-0.5 transition-colors" onClick={() => onNavigate('due-dates', r.filter)}>
               <span className="flex items-center text-text-dim"><div className={`w-2 h-2 ${r.color} rounded-full mr-2`} />{r.label}</span>
@@ -723,8 +764,6 @@ const ContractsView = ({ contracts, clients, installments, onRefresh, onNavigate
   const contractStats = dataService.getStats();
   const enrichedAll = dataService.getEnrichedInstallments();
   const veryOverdue = enrichedAll.filter((i: EnrichedInstallment) => i.status === 'overdue' && i.daysLate > 30);
-  const interestReceived = enrichedAll.filter((i: EnrichedInstallment) => i.status === 'paid').reduce((s: number, i: EnrichedInstallment) => s + (i.computedInterest || 0), 0);
-  const interestPending = enrichedAll.filter((i: EnrichedInstallment) => i.status !== 'paid').reduce((s: number, i: EnrichedInstallment) => s + (i.computedInterest || 0), 0);
 
   const summaryCards = [
     { label: 'Contratos', value: String(contracts.length), color: 'text-text-main', nav: undefined },
@@ -734,10 +773,10 @@ const ContractsView = ({ contracts, clients, installments, onRefresh, onNavigate
     { label: 'Em Aberto', value: `R$ ${fmt(contractStats.pending)}`, color: 'text-warning', nav: 'pending' },
     { label: 'Em Atraso', value: `R$ ${fmt(contractStats.overdue)}`, color: 'text-danger', nav: 'overdue' },
     { label: 'Juros Total', value: `R$ ${fmt(contractStats.totalInterest)}`, color: 'text-warning', nav: undefined },
-    { label: 'Juros Recebido', value: `R$ ${fmt(interestReceived)}`, color: 'text-accent', nav: undefined },
-    { label: 'Juros a Receber', value: `R$ ${fmt(interestPending)}`, color: 'text-warning', nav: undefined },
-    { label: 'Muito Atraso', value: `R$ ${fmt(veryOverdue.reduce((s: number, i: EnrichedInstallment) => s + i.totalDue, 0))}`, color: 'text-danger', nav: 'overdue' },
-    { label: 'Multas Recebidas', value: `R$ ${fmt(interestReceived)}`, color: 'text-accent', nav: undefined },
+    { label: 'Juros Recebido', value: `R$ ${fmt(contractStats.interestReceived)}`, color: 'text-accent', nav: undefined },
+    { label: 'Juros a Receber', value: `R$ ${fmt(contractStats.interestPending)}`, color: 'text-danger', nav: 'overdue' },
+    { label: 'Muito Atraso (+30d)', value: `R$ ${fmt(veryOverdue.reduce((s: number, i: EnrichedInstallment) => s + i.totalDue, 0))}`, color: 'text-danger', nav: 'overdue' },
+    { label: 'Multas Recebidas', value: `R$ ${fmt(contractStats.interestReceived)}`, color: 'text-accent', nav: undefined },
   ];
 
   return (
@@ -930,12 +969,25 @@ const AnalysisView = ({ revenueData, stats, onNavigate }: any) => (
               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#2D333E" opacity={0.3} />
               <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#94A3B8', fontSize: 10 }} />
               <YAxis axisLine={false} tickLine={false} tick={{ fill: '#94A3B8', fontSize: 10 }} />
-              <Tooltip cursor={{ fill: 'rgba(16,185,129,0.05)' }} contentStyle={{ backgroundColor: '#1C1F26', border: '1px solid #2D333E' }} formatter={(v: any) => `R$ ${fmt(v)}`} />
-              <Bar dataKey="previsto" fill="#10B981" radius={[2, 2, 0, 0]} barSize={24} opacity={0.2} />
-              <Bar dataKey="receita" fill="#10B981" radius={[2, 2, 0, 0]} barSize={24} />
-              <Bar dataKey="atrasado" fill="#EF4444" radius={[2, 2, 0, 0]} barSize={8} opacity={0.6} />
+              <Tooltip cursor={{ fill: 'rgba(16,185,129,0.05)' }} contentStyle={{ backgroundColor: '#1C1F26', border: '1px solid #2D333E' }} formatter={(v: any, name: string) => [`R$ ${fmt(v)}`, name === 'receita' ? 'Recebido' : name === 'previsto' ? 'Previsto' : name === 'juros' ? 'Juros' : 'Atrasado']} />
+              <Bar dataKey="previsto" fill="#10B981" radius={[2, 2, 0, 0]} barSize={20} opacity={0.2} name="previsto" />
+              <Bar dataKey="receita" fill="#10B981" radius={[2, 2, 0, 0]} barSize={20} name="receita" />
+              <Bar dataKey="juros" fill="#F59E0B" radius={[2, 2, 0, 0]} barSize={10} opacity={0.9} name="juros" />
+              <Bar dataKey="atrasado" fill="#EF4444" radius={[2, 2, 0, 0]} barSize={8} opacity={0.6} name="atrasado" />
             </BarChart>
           </ResponsiveContainer>
+        </div>
+        <div className="flex gap-3 mt-3 flex-wrap">
+          {[
+            { color: 'bg-accent opacity-30', label: 'Previsto' },
+            { color: 'bg-accent', label: 'Recebido' },
+            { color: 'bg-warning', label: 'Juros recebidos' },
+            { color: 'bg-danger opacity-60', label: 'Atrasado' },
+          ].map(l => (
+            <div key={l.label} className="flex items-center gap-1 text-[10px] text-text-dim">
+              <div className={`w-2 h-2 rounded-full ${l.color}`} />{l.label}
+            </div>
+          ))}
         </div>
       </section>
       <section className="panel-card p-6 flex flex-col">
@@ -954,10 +1006,15 @@ const AnalysisView = ({ revenueData, stats, onNavigate }: any) => (
             <div className="text-2xl font-bold font-mono text-danger">{stats.totalValue > 0 ? ((stats.overdue / stats.totalValue) * 100).toFixed(1) : '0.0'}%</div>
             <div className="text-[10px] text-danger/60 mt-1">Ver parcelas em atraso →</div>
           </div>
-          <div className="bg-warning/5 border border-dashed border-warning/30 p-4 rounded-lg cursor-pointer hover:bg-warning/10 transition-colors" onClick={() => onNavigate('reports')}>
-            <div className="text-[10px] font-bold text-warning uppercase mb-2 tracking-wider">Total de Juros Acumulados</div>
-            <div className="text-2xl font-bold font-mono text-warning">R$ {fmt(stats.totalInterest)}</div>
-            <div className="text-[10px] text-warning/60 mt-1">Ver relatório completo →</div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="bg-accent/5 border border-accent/20 p-3 rounded-lg cursor-pointer hover:bg-accent/10 transition-colors" onClick={() => onNavigate('reports')}>
+              <div className="text-[10px] font-bold text-accent uppercase mb-1 tracking-wider">Juros Recebidos</div>
+              <div className="text-lg font-bold font-mono text-accent">R$ {fmt(stats.interestReceived)}</div>
+            </div>
+            <div className="bg-warning/5 border border-warning/20 p-3 rounded-lg cursor-pointer hover:bg-warning/10 transition-colors" onClick={() => onNavigate('due-dates', 'overdue')}>
+              <div className="text-[10px] font-bold text-warning uppercase mb-1 tracking-wider">Juros a Receber</div>
+              <div className="text-lg font-bold font-mono text-warning">R$ {fmt(stats.interestPending)}</div>
+            </div>
           </div>
         </div>
       </section>
@@ -1004,10 +1061,22 @@ const ReportsView = ({ clients, contracts, onNavigate }: any) => {
 
   const overdue = enriched.filter(i => i.status === 'overdue');
   const filteredStats = {
-    totalValue: enriched.reduce((a, i) => a + i.amount, 0),
-    received: enriched.filter(i => i.status === 'paid').reduce((a, i) => a + i.amount, 0),
-    pending: enriched.filter(i => i.status === 'pending').reduce((a, i) => a + i.amount, 0),
-    overdue: overdue.reduce((a, i) => a + i.totalDue, 0),
+    totalValue:        enriched.reduce((a, i) => a + i.amount, 0),
+    received:          enriched.filter(i => i.status === 'paid').reduce((a, i) => a + i.amount, 0),
+    pending:           enriched.filter(i => i.status === 'pending').reduce((a, i) => a + i.amount, 0),
+    overdue:           overdue.reduce((a, i) => a + i.totalDue, 0),
+    // Juros efetivamente cobrados nas parcelas pagas (campo interestPaid salvo no banco)
+    interestReceived:  dataService.getInstallments()
+                         .filter(i => {
+                           if (i.status !== 'paid') return false;
+                           if (statusFilter !== 'all' && i.status !== statusFilter) return false;
+                           if (dateFrom && i.dueDate < dateFrom) return false;
+                           if (dateTo && i.dueDate > dateTo) return false;
+                           return true;
+                         })
+                         .reduce((a, i) => a + (i.interestPaid ?? 0), 0),
+    // Juros acumulado nas parcelas em atraso do período filtrado
+    interestPending:   overdue.reduce((a, i) => a + i.computedInterest, 0),
   };
 
   const hasFilter = dateFrom || dateTo || statusFilter !== 'all';
@@ -1109,16 +1178,18 @@ const ReportsView = ({ clients, contracts, onNavigate }: any) => {
       </div>
 
       {/* Summary cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
         {[
-          { l: 'Total Cobrado', v: `R$ ${fmt(filteredStats.totalValue)}`, c: 'text-text-main', nav: 'contracts', filter: undefined },
-          { l: 'Recebido', v: `R$ ${fmt(filteredStats.received)}`, c: 'text-accent', nav: 'due-dates', filter: 'paid' },
-          { l: 'Pendente', v: `R$ ${fmt(filteredStats.pending)}`, c: 'text-warning', nav: 'due-dates', filter: 'pending' },
-          { l: 'Em Atraso + Juros', v: `R$ ${fmt(filteredStats.overdue)}`, c: 'text-danger', nav: 'due-dates', filter: 'overdue' },
+          { l: 'Total Cobrado',     v: `R$ ${fmt(filteredStats.totalValue)}`,        c: 'text-text-main', nav: 'contracts', filter: undefined },
+          { l: 'Recebido',          v: `R$ ${fmt(filteredStats.received)}`,           c: 'text-accent',    nav: 'due-dates', filter: 'paid' },
+          { l: 'Pendente',          v: `R$ ${fmt(filteredStats.pending)}`,            c: 'text-warning',   nav: 'due-dates', filter: 'pending' },
+          { l: 'Em Atraso + Juros', v: `R$ ${fmt(filteredStats.overdue)}`,            c: 'text-danger',    nav: 'due-dates', filter: 'overdue' },
+          { l: 'Juros Recebidos',   v: `R$ ${fmt(filteredStats.interestReceived)}`,   c: 'text-accent',    nav: 'due-dates', filter: 'paid' },
+          { l: 'Juros a Receber',   v: `R$ ${fmt(filteredStats.interestPending)}`,    c: 'text-danger',    nav: 'due-dates', filter: 'overdue' },
         ].map(s => (
-          <div key={s.l} className="panel-card p-5 cursor-pointer hover:border-accent/40 transition-all" onClick={() => onNavigate(s.nav, s.filter)}>
+          <div key={s.l} className="panel-card p-4 cursor-pointer hover:border-accent/40 transition-all" onClick={() => onNavigate(s.nav, s.filter)}>
             <p className="text-[10px] text-text-dim uppercase tracking-widest mb-1">{s.l}</p>
-            <p className={`text-xl font-bold ${s.c}`}>{s.v}</p>
+            <p className={`text-base font-bold ${s.c}`}>{s.v}</p>
             <p className="text-[9px] text-accent/50 mt-1">Ver detalhes →</p>
           </div>
         ))}
