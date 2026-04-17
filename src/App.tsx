@@ -1650,8 +1650,7 @@ export default function App() {
   // ── Loading screen ──
   if (user === undefined) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-bg">
-        <div className="flex flex-col items-center gap-4">
+      <div className="flex items-center justify-center bg-bg" style={{ minHeight: 'var(--app-height, 100dvh)' }}>
           <div className="w-8 h-8 border-2 border-accent border-t-transparent rounded-full animate-spin" />
           <p className="text-text-dim text-sm">Carregando...</p>
         </div>
@@ -1686,9 +1685,10 @@ export default function App() {
   const overdueCount = stats.overdueCount;
 
   return (
-    <div className="min-h-screen flex bg-bg">
+    <div className="app-shell flex bg-bg" style={{ height: 'var(--app-height, 100dvh)' }}>
       {/* Sidebar */}
-      <aside className={`fixed inset-y-0 left-0 z-50 w-60 bg-sidebar transform transition-transform duration-300 ease-in-out border-r border-border ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'} lg:relative lg:translate-x-0`}>
+      <aside className={`fixed inset-y-0 left-0 z-50 w-60 bg-sidebar transform transition-transform duration-300 ease-in-out border-r border-border ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'} lg:relative lg:translate-x-0`}
+        style={{ height: 'var(--app-height, 100dvh)' }}>
         <div className="p-6 flex flex-col h-full">
           <div className="flex items-center gap-3 mb-8 px-1">
             <div className="w-8 h-8 bg-accent rounded-lg flex items-center justify-center text-bg shadow-lg shadow-accent/10"><CreditCard size={18} /></div>
@@ -1723,7 +1723,7 @@ export default function App() {
 
       {isSidebarOpen && <div className="fixed inset-0 z-40 bg-black/40 lg:hidden" onClick={() => setIsSidebarOpen(false)} />}
 
-      <main className="flex-1 flex flex-col h-screen overflow-hidden text-text-main font-sans">
+      <main className="flex-1 flex flex-col overflow-hidden text-text-main font-sans" style={{ height: 'var(--app-height, 100dvh)' }}>
         <header className="bg-bg/80 backdrop-blur-md border-b border-border px-6 h-12 flex items-center justify-between sticky top-0 z-40">
           <div className="flex items-center gap-4">
             <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="lg:hidden p-1 text-text-dim">
@@ -1754,7 +1754,7 @@ export default function App() {
           </div>
         </header>
 
-        <div className="flex-1 overflow-y-auto p-6 md:p-8 bg-bg" style={{ scrollbarWidth: 'thin', scrollbarColor: '#2a2a2a transparent' }}>
+        <div className="flex-1 overflow-y-auto p-6 md:p-8 bg-bg scroll-smooth-ios" style={{ scrollbarWidth: 'thin', scrollbarColor: '#2a2a2a transparent', WebkitOverflowScrolling: 'touch' } as any}>
           <AnimatePresence mode="wait">
             <motion.div key={activeTab} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }}>
               <header className="mb-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -1869,7 +1869,7 @@ function AuthScreen({ onGoogleLogin }: { onGoogleLogin: () => void }) {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-bg px-4">
+    <div className="flex items-center justify-center bg-bg px-4" style={{ minHeight: 'var(--app-height, 100dvh)' }}>
       <div className="bg-card border border-border rounded-2xl p-8 flex flex-col gap-6 shadow-2xl w-full max-w-sm">
         {/* Logo */}
         <div className="flex flex-col items-center gap-3">
