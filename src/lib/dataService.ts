@@ -5,7 +5,6 @@ import {
   onSnapshot,
   doc,
   writeBatch,
-  getDocFromServer,
   updateDoc,
   deleteDoc,
 } from 'firebase/firestore';
@@ -13,22 +12,13 @@ import { db, auth } from '../firebase';
 
 export type PaymentStatus = 'pending' | 'paid' | 'overdue';
 
-enum OperationType {
-  CREATE = 'create',
-  UPDATE = 'update',
-  DELETE = 'delete',
-  LIST = 'list',
-  GET = 'get',
-  WRITE = 'write',
-}
-
 export interface AppSettings {
-  compoundInterestRate: number;   // % ao dia (ex: 0.5 = 0,5%/dia)
-  graceDays: number;               // dias de carência antes de cobrar juros
+  compoundInterestRate: number;
+  graceDays: number;
   whatsappTemplate: string;
   whatsappOverdueTemplate: string;
   companyName: string;
-  ownerPhone: string;              // Número do credor para whatsapp
+  ownerPhone: string;
 }
 
 export interface SubLogin {
@@ -103,17 +93,54 @@ class DataService {
   private contracts: Contract[] = [];
   private installments: Installment[] = [];
   private listeners: (() => void)[] = [];
+  private currentUid: string | null = null;
+  private unsubFirebase: (() => void)[] = [];
 
   constructor() {
+    // Data is loaded when setUser() is called
+  }
+
+  // ─── User Management ─────────────────────────────────────────────────────────
+
+  setUser(uid: string | null) {
+    // Unsubscribe from previous Firebase listeners
+    this.unsubFirebase.forEach(u => u());
+    this.unsubFirebase = [];
+    this.currentUid = uid;
+
+    if (!uid) {
+      this.clients = [];
+      this.contracts = [];
+      this.installments = [];
+      this.notify();
+      return;
+    }
+
+    // Load cached data immediately for fast UI
     this.loadFromLocal();
-    this.initFirebase();
+    // Then sync with Firebase realtime
+    this.initFirebase(uid);
+  }
+
+  // ─── Local storage key helpers ────────────────────────────────────────────────
+
+  private localKey(base: string) {
+    return this.currentUid ? `niklaus_${this.currentUid}_${base}` : `niklaus_${base}`;
+  }
+
+  private settingsKey() {
+    return this.currentUid ? `niklaus_${this.currentUid}_settings` : 'niklaus_settings';
+  }
+
+  private subLoginsKey() {
+    return this.currentUid ? `niklaus_${this.currentUid}_sublogins` : 'niklaus_sublogins';
   }
 
   // ─── Settings ───────────────────────────────────────────────────────────────
 
   getSettings(): AppSettings {
     try {
-      const saved = localStorage.getItem('niklaus_settings');
+      const saved = localStorage.getItem(this.settingsKey());
       return saved ? { ...DEFAULT_SETTINGS, ...JSON.parse(saved) } : DEFAULT_SETTINGS;
     } catch {
       return DEFAULT_SETTINGS;
@@ -123,7 +150,7 @@ class DataService {
   updateSettings(data: Partial<AppSettings>) {
     const current = this.getSettings();
     const updated = { ...current, ...data };
-    localStorage.setItem('niklaus_settings', JSON.stringify(updated));
+    localStorage.setItem(this.settingsKey(), JSON.stringify(updated));
     this.notify();
   }
 
@@ -131,7 +158,7 @@ class DataService {
 
   getSubLogins(): SubLogin[] {
     try {
-      const saved = localStorage.getItem('niklaus_sublogins');
+      const saved = localStorage.getItem(this.subLoginsKey());
       return saved ? JSON.parse(saved) : [];
     } catch {
       return [];
@@ -146,27 +173,25 @@ class DataService {
     };
     const list = this.getSubLogins();
     list.push(newSub);
-    localStorage.setItem('niklaus_sublogins', JSON.stringify(list));
+    localStorage.setItem(this.subLoginsKey(), JSON.stringify(list));
     this.notify();
     return newSub;
   }
 
   updateSubLogin(id: string, data: Partial<SubLogin>) {
     const list = this.getSubLogins().map(s => (s.id === id ? { ...s, ...data } : s));
-    localStorage.setItem('niklaus_sublogins', JSON.stringify(list));
+    localStorage.setItem(this.subLoginsKey(), JSON.stringify(list));
     this.notify();
   }
 
   deleteSubLogin(id: string) {
     const list = this.getSubLogins().filter(s => s.id !== id);
-    localStorage.setItem('niklaus_sublogins', JSON.stringify(list));
+    localStorage.setItem(this.subLoginsKey(), JSON.stringify(list));
     this.notify();
   }
 
   // ─── Auth helper ─────────────────────────────────────────────────────────────
 
-  // Aguarda o Firebase resolver a sessão antes de retornar o usuário.
-  // Resolve o problema de auth.currentUser === null nos primeiros ms após carregamento.
   private getCurrentUser() {
     return new Promise<typeof auth.currentUser>(resolve => {
       if (auth.currentUser !== null) {
@@ -229,19 +254,19 @@ class DataService {
   // ─── Firebase / local bootstrap ──────────────────────────────────────────────
 
   private loadFromLocal() {
-    const sc = localStorage.getItem('niklaus_clients');
-    const sco = localStorage.getItem('niklaus_contracts');
-    const si = localStorage.getItem('niklaus_installments');
-    if (sc) this.clients = JSON.parse(sc);
-    if (sco) this.contracts = JSON.parse(sco);
-    if (si) this.installments = JSON.parse(si);
+    try {
+      const sc = localStorage.getItem(this.localKey('clients'));
+      const sco = localStorage.getItem(this.localKey('contracts'));
+      const si = localStorage.getItem(this.localKey('installments'));
+      if (sc) this.clients = JSON.parse(sc);
+      if (sco) this.contracts = JSON.parse(sco);
+      if (si) this.installments = JSON.parse(si);
+    } catch { /* ignore parse errors */ }
   }
 
-  private initFirebase() {
-    this.testConnection();
-
-    onSnapshot(
-      collection(db, 'clients'),
+  private initFirebase(uid: string) {
+    const unsub1 = onSnapshot(
+      collection(db, 'users', uid, 'clients'),
       s => {
         this.clients = s.docs.map(d => ({ id: d.id, ...d.data() } as Client));
         this.notify();
@@ -249,8 +274,8 @@ class DataService {
       e => console.warn('[Firebase] clients read error:', e.message),
     );
 
-    onSnapshot(
-      collection(db, 'contracts'),
+    const unsub2 = onSnapshot(
+      collection(db, 'users', uid, 'contracts'),
       s => {
         this.contracts = s.docs.map(d => ({ id: d.id, ...d.data() } as Contract));
         this.notify();
@@ -258,24 +283,16 @@ class DataService {
       e => console.warn('[Firebase] contracts read error:', e.message),
     );
 
-    onSnapshot(
-      collection(db, 'installments'),
+    const unsub3 = onSnapshot(
+      collection(db, 'users', uid, 'installments'),
       s => {
         this.installments = s.docs.map(d => ({ id: d.id, ...d.data() } as Installment));
         this.notify();
       },
       e => console.warn('[Firebase] installments read error:', e.message),
     );
-  }
 
-  private async testConnection() {
-    try {
-      await getDocFromServer(doc(db, 'test', 'connection'));
-    } catch (error) {
-      if (error instanceof Error && error.message.includes('offline')) {
-        console.warn('[Firebase] Cliente offline — usando modo local.');
-      }
-    }
+    this.unsubFirebase = [unsub1, unsub2, unsub3];
   }
 
   private notify() {
@@ -284,9 +301,9 @@ class DataService {
   }
 
   private saveToLocal() {
-    localStorage.setItem('niklaus_clients', JSON.stringify(this.clients));
-    localStorage.setItem('niklaus_contracts', JSON.stringify(this.contracts));
-    localStorage.setItem('niklaus_installments', JSON.stringify(this.installments));
+    localStorage.setItem(this.localKey('clients'), JSON.stringify(this.clients));
+    localStorage.setItem(this.localKey('contracts'), JSON.stringify(this.contracts));
+    localStorage.setItem(this.localKey('installments'), JSON.stringify(this.installments));
   }
 
   subscribe(listener: () => void) {
@@ -306,7 +323,6 @@ class DataService {
     const user = await this.getCurrentUser();
 
     if (!user) {
-      console.warn('[addClient] Usuário não autenticado. Salvando localmente.');
       const nc = { ...client, id: `cl-${Date.now()}` };
       this.clients.push(nc);
       this.notify();
@@ -314,7 +330,7 @@ class DataService {
     }
 
     try {
-      const ref = await addDoc(collection(db, 'clients'), client);
+      const ref = await addDoc(collection(db, 'users', user.uid, 'clients'), client);
       return { ...client, id: ref.id };
     } catch (e) {
       console.error('[addClient]', e);
@@ -330,22 +346,33 @@ class DataService {
     this.notify();
     const user = await this.getCurrentUser();
     if (user) {
-      try { await updateDoc(doc(db, 'clients', id), data as any); } catch (e) { console.error('[updateClient]', e); }
+      try { await updateDoc(doc(db, 'users', user.uid, 'clients', id), data as any); }
+      catch (e) { console.error('[updateClient]', e); }
     }
   }
 
   async deleteClient(id: string) {
     const contractIds = this.contracts.filter(c => c.clientId === id).map(c => c.id);
+    const installmentIds = this.installments
+      .filter(i => contractIds.includes(i.contractId))
+      .map(i => i.id);
+
+    // Delete locally first (instant UI update)
     this.installments = this.installments.filter(i => !contractIds.includes(i.contractId));
     this.contracts = this.contracts.filter(c => c.clientId !== id);
     this.clients = this.clients.filter(c => c.id !== id);
     this.notify();
+
+    // Then sync to Firebase (including installments — fixes the re-appear bug)
     const user = await this.getCurrentUser();
     if (user) {
       try {
-        await deleteDoc(doc(db, 'clients', id));
+        await deleteDoc(doc(db, 'users', user.uid, 'clients', id));
         for (const cid of contractIds) {
-          await deleteDoc(doc(db, 'contracts', cid));
+          await deleteDoc(doc(db, 'users', user.uid, 'contracts', cid));
+        }
+        for (const iid of installmentIds) {
+          await deleteDoc(doc(db, 'users', user.uid, 'installments', iid));
         }
       } catch (e) { console.error('[deleteClient]', e); }
     }
@@ -359,7 +386,6 @@ class DataService {
     const user = await this.getCurrentUser();
 
     if (!user) {
-      console.warn('[addContract] Usuário não autenticado. Salvando localmente.');
       const nc = { ...contract, id: `c-${Date.now()}` };
       this.contracts.push(nc);
       for (let i = 0; i < contract.installmentsCount; i++) {
@@ -374,10 +400,10 @@ class DataService {
     }
 
     try {
-      const cRef = await addDoc(collection(db, 'contracts'), contract);
+      const cRef = await addDoc(collection(db, 'users', user.uid, 'contracts'), contract);
       const batch = writeBatch(db);
       for (let i = 0; i < contract.installmentsCount; i++) {
-        const iRef = doc(collection(db, 'installments'));
+        const iRef = doc(collection(db, 'users', user.uid, 'installments'));
         batch.set(iRef, {
           contractId: cRef.id, number: i + 1, amount: installmentAmount,
           dueDate: format(addMonths(baseDate, i), 'yyyy-MM-dd'), status: 'pending',
@@ -402,12 +428,22 @@ class DataService {
   }
 
   async deleteContract(id: string) {
+    const installmentIds = this.installments.filter(i => i.contractId === id).map(i => i.id);
+
+    // Delete locally first
     this.installments = this.installments.filter(i => i.contractId !== id);
     this.contracts = this.contracts.filter(c => c.id !== id);
     this.notify();
+
+    // Sync to Firebase including all installments
     const user = await this.getCurrentUser();
     if (user) {
-      try { await deleteDoc(doc(db, 'contracts', id)); } catch (e) { console.error('[deleteContract]', e); }
+      try {
+        await deleteDoc(doc(db, 'users', user.uid, 'contracts', id));
+        for (const iid of installmentIds) {
+          await deleteDoc(doc(db, 'users', user.uid, 'installments', iid));
+        }
+      } catch (e) { console.error('[deleteContract]', e); }
     }
   }
 
@@ -421,7 +457,8 @@ class DataService {
     this.notify();
     const user = await this.getCurrentUser();
     if (user) {
-      try { await updateDoc(doc(db, 'installments', id), { status: 'paid', paidAt }); } catch (e) { console.error('[markPaid]', e); }
+      try { await updateDoc(doc(db, 'users', user.uid, 'installments', id), { status: 'paid', paidAt }); }
+      catch (e) { console.error('[markPaid]', e); }
     }
     const inst = this.installments.find(i => i.id === id);
     if (inst) {
@@ -439,7 +476,8 @@ class DataService {
     this.notify();
     const user = await this.getCurrentUser();
     if (user) {
-      try { await updateDoc(doc(db, 'installments', id), { status: 'pending', paidAt: null }); } catch (e) { console.error('[markPending]', e); }
+      try { await updateDoc(doc(db, 'users', user.uid, 'installments', id), { status: 'pending', paidAt: null }); }
+      catch (e) { console.error('[markPending]', e); }
     }
   }
 
@@ -448,7 +486,8 @@ class DataService {
     this.notify();
     const user = await this.getCurrentUser();
     if (user) {
-      try { await updateDoc(doc(db, 'contracts', id), { status }); } catch (e) { console.error('[updateContractStatus]', e); }
+      try { await updateDoc(doc(db, 'users', user.uid, 'contracts', id), { status }); }
+      catch (e) { console.error('[updateContractStatus]', e); }
     }
   }
 
@@ -464,7 +503,11 @@ class DataService {
     const pending = enriched.filter(i => i.status === 'pending').reduce((a, i) => a + i.amount, 0);
     const open = pending + overdue;
     const totalInterest = enriched.reduce((a, i) => a + i.computedInterest, 0);
-    return { activeContracts, totalValue, received, overdue, open, pending, totalInterest, totalClients: this.clients.length, overdueCount: overdueItems.length };
+    return {
+      activeContracts, totalValue, received, overdue, open,
+      pending, totalInterest, totalClients: this.clients.length,
+      overdueCount: overdueItems.length,
+    };
   }
 
   getRevenueData() {
