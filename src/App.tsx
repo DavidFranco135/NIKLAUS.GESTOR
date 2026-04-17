@@ -16,6 +16,7 @@ import { auth } from './firebase';
 import {
   onAuthStateChanged, signInWithPopup, GoogleAuthProvider, signOut,
   createUserWithEmailAndPassword, signInWithEmailAndPassword, sendPasswordResetEmail,
+  fetchSignInMethodsForEmail,
 } from 'firebase/auth';
 import {
   dataService, Client, Contract, Installment, EnrichedInstallment,
@@ -1669,21 +1670,53 @@ function AuthScreen({ onGoogleLogin }: { onGoogleLogin: () => void }) {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [loading, setLoading] = useState(false);
+  // 'google' = conta vinculada ao Google, 'exists' = conta com senha já existe
+  const [existingProvider, setExistingProvider] = useState<'google' | 'exists' | null>(null);
 
   const reset = (m: AuthMode) => {
-    setMode(m); setError(''); setSuccess(''); setPassword(''); setConfirmPassword('');
+    setMode(m); setError(''); setSuccess(''); setPassword(''); setConfirmPassword(''); setExistingProvider(null);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError(''); setSuccess(''); setLoading(true);
+    setError(''); setSuccess(''); setExistingProvider(null); setLoading(true);
     try {
       if (mode === 'login') {
         await signInWithEmailAndPassword(auth, email, password);
+
       } else if (mode === 'register') {
         if (password !== confirmPassword) { setError('As senhas não coincidem.'); setLoading(false); return; }
         if (password.length < 6) { setError('A senha deve ter pelo menos 6 caracteres.'); setLoading(false); return; }
-        await createUserWithEmailAndPassword(auth, email, password);
+
+        try {
+          await createUserWithEmailAndPassword(auth, email, password);
+        } catch (regErr: any) {
+          if (regErr.code === 'auth/email-already-in-use') {
+            // Descobrir qual provedor está vinculado a esse e-mail
+            try {
+              const methods = await fetchSignInMethodsForEmail(auth, email);
+              if (methods.includes('google.com') && !methods.includes('password')) {
+                // Conta Google — sugerir login com Google
+                setExistingProvider('google');
+                setError('Este e-mail já está vinculado a uma conta Google. Use o botão "Entrar com Google" abaixo.');
+              } else {
+                // Conta com senha — trocar para modo login
+                setExistingProvider('exists');
+                setMode('login');
+                setPassword('');
+                setError('Este e-mail já possui cadastro. Digite sua senha para entrar.');
+              }
+            } catch {
+              // fallback: só mostrar mensagem e mudar para login
+              setMode('login');
+              setPassword('');
+              setError('Este e-mail já possui cadastro. Faça login abaixo.');
+            }
+          } else {
+            throw regErr;
+          }
+        }
+
       } else if (mode === 'forgot') {
         await sendPasswordResetEmail(auth, email);
         setSuccess('E-mail de redefinição enviado! Verifique sua caixa de entrada.');
@@ -1770,8 +1803,28 @@ function AuthScreen({ onGoogleLogin }: { onGoogleLogin: () => void }) {
           )}
 
           {error && (
-            <div className="bg-danger/10 border border-danger/30 rounded-lg px-3 py-2 text-xs text-danger flex items-center gap-2">
-              <AlertCircle size={12} className="shrink-0" /> {error}
+            <div className="bg-danger/10 border border-danger/30 rounded-lg px-3 py-2 text-xs text-danger space-y-2">
+              <div className="flex items-start gap-2">
+                <AlertCircle size={12} className="shrink-0 mt-0.5" /> <span>{error}</span>
+              </div>
+              {existingProvider === 'google' && (
+                <button
+                  type="button"
+                  onClick={onGoogleLogin}
+                  className="w-full flex items-center justify-center gap-2 bg-white text-gray-800 font-semibold py-2 rounded-lg hover:bg-gray-100 transition-all text-xs shadow"
+                >
+                  <svg width="14" height="14" viewBox="0 0 48 48">
+                    <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+                    <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+                    <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+                    <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.31-8.16 2.31-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+                  </svg>
+                  Entrar com Google agora
+                </button>
+              )}
+              {existingProvider === 'exists' && (
+                <p className="text-danger/70">Digite sua senha no campo acima para entrar.</p>
+              )}
             </div>
           )}
 
