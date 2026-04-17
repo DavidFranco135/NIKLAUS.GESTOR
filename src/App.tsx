@@ -440,14 +440,15 @@ const DashboardView = ({ stats, revenueData, onNavigate }: any) => (
     </div>
 
     {/* Cards de juros */}
-    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
       {[
         { label: 'Juros Recebidos', value: `R$ ${fmt(stats.interestReceived)}`, color: 'text-accent', sub: 'Cobrado e pago', icon: CheckCircle2, filter: 'paid' },
-        { label: 'Juros em Aberto', value: `R$ ${fmt(stats.interestPending)}`, color: 'text-danger', sub: 'Sobre parcelas em atraso', icon: AlertCircle, filter: 'overdue' },
-        { label: 'Total de Juros', value: `R$ ${fmt(stats.totalInterest)}`, color: 'text-warning', sub: 'Recebidos + pendentes', icon: TrendingUp, filter: undefined },
+        { label: 'Juros em Atraso', value: `R$ ${fmt(stats.interestPending)}`, color: 'text-danger', sub: 'Acumulado nas atrasadas', icon: AlertCircle, filter: 'overdue' },
+        { label: 'Juros Projetado 30d', value: `R$ ${fmt(stats.projectedInterest)}`, color: 'text-warning', sub: 'Se pendentes ficarem 30d em atraso', icon: TrendingUp, filter: undefined },
+        { label: 'Total de Juros', value: `R$ ${fmt(stats.totalInterest)}`, color: 'text-warning', sub: 'Recebidos + em atraso', icon: TrendingUp, filter: undefined },
       ].map(s => (
         <div key={s.label} className={`panel-card p-4 flex items-center gap-4 ${s.filter ? 'cursor-pointer hover:border-accent/40 transition-all' : ''}`} onClick={() => s.filter && onNavigate('due-dates', s.filter)}>
-          <div className={`p-2 rounded-lg bg-white/5`}><s.icon size={18} className={s.color} /></div>
+          <div className="p-2 rounded-lg bg-white/5"><s.icon size={18} className={s.color} /></div>
           <div>
             <p className="text-[10px] text-text-dim uppercase tracking-widest font-medium">{s.label}</p>
             <p className={`text-lg font-bold ${s.color}`}>{s.value}</p>
@@ -848,17 +849,15 @@ const ContractsView = ({ contracts, clients, installments, onRefresh, onNavigate
   const veryOverdue = enrichedAll.filter((i: EnrichedInstallment) => i.status === 'overdue' && i.daysLate > 30);
 
   const summaryCards = [
-    { label: 'Contratos', value: String(contracts.length), color: 'text-text-main', nav: undefined },
-    { label: 'Valor Previsto', value: `R$ ${fmt(contractStats.totalValue)}`, color: 'text-text-main', nav: undefined },
-    { label: 'Recebido', value: `R$ ${fmt(contractStats.received)}`, color: 'text-accent', nav: 'paid' },
-    { label: 'Valor Total', value: `R$ ${fmt(contractStats.totalValue)}`, color: 'text-text-main', nav: undefined },
-    { label: 'Em Aberto', value: `R$ ${fmt(contractStats.pending)}`, color: 'text-warning', nav: 'pending' },
-    { label: 'Em Atraso', value: `R$ ${fmt(contractStats.overdue)}`, color: 'text-danger', nav: 'overdue' },
-    { label: 'Juros Total', value: `R$ ${fmt(contractStats.totalInterest)}`, color: 'text-warning', nav: undefined },
-    { label: 'Juros Recebido', value: `R$ ${fmt(contractStats.interestReceived)}`, color: 'text-accent', nav: undefined },
-    { label: 'Juros a Receber', value: `R$ ${fmt(contractStats.interestPending)}`, color: 'text-danger', nav: 'overdue' },
-    { label: 'Muito Atraso (+30d)', value: `R$ ${fmt(veryOverdue.reduce((s: number, i: EnrichedInstallment) => s + i.totalDue, 0))}`, color: 'text-danger', nav: 'overdue' },
-    { label: 'Multas Recebidas', value: `R$ ${fmt(contractStats.interestReceived)}`, color: 'text-accent', nav: undefined },
+    { label: 'Contratos', value: String(contracts.length), color: 'text-text-main', nav: undefined, tip: undefined },
+    { label: 'Valor Total', value: `R$ ${fmt(contractStats.totalValue)}`, color: 'text-text-main', nav: undefined, tip: undefined },
+    { label: 'Recebido', value: `R$ ${fmt(contractStats.received)}`, color: 'text-accent', nav: 'paid', tip: 'parcelas pagas' },
+    { label: 'Em Aberto', value: `R$ ${fmt(contractStats.pending)}`, color: 'text-warning', nav: 'pending', tip: 'parcelas pendentes' },
+    { label: 'Em Atraso', value: `R$ ${fmt(contractStats.overdue)}`, color: 'text-danger', nav: 'overdue', tip: 'principal + juros' },
+    { label: 'Juros Recebidos', value: `R$ ${fmt(contractStats.interestReceived)}`, color: 'text-accent', nav: undefined, tip: 'cobrado nas pagas' },
+    { label: 'Juros em Atraso', value: `R$ ${fmt(contractStats.interestPending)}`, color: 'text-danger', nav: 'overdue', tip: 'acumulado nas atrasadas' },
+    { label: 'Juros Projetado 30d', value: `R$ ${fmt(contractStats.projectedInterest)}`, color: 'text-warning', nav: undefined, tip: 'se pendentes ficarem 30d atrasadas' },
+    { label: 'Atraso +30 dias', value: `R$ ${fmt(veryOverdue.reduce((s: number, i: EnrichedInstallment) => s + i.totalDue, 0))}`, color: 'text-danger', nav: 'overdue', tip: 'total com juros' },
   ];
 
   return (
@@ -871,6 +870,7 @@ const ContractsView = ({ contracts, clients, installments, onRefresh, onNavigate
           >
             <p className="text-[10px] text-text-dim uppercase tracking-widest mb-1 font-medium">{s.label}</p>
             <p className={`text-sm font-bold ${s.color}`}>{s.value}</p>
+            {s.tip && <p className="text-[9px] text-text-dim/60 mt-0.5">{s.tip}</p>}
             {s.nav && <p className="text-[9px] text-accent/50 mt-1">Ver detalhes →</p>}
           </div>
         ))}
@@ -1159,10 +1159,17 @@ const AnalysisView = ({ revenueData, stats, onNavigate }: any) => (
             <div className="bg-accent/5 border border-accent/20 p-3 rounded-lg cursor-pointer hover:bg-accent/10 transition-colors" onClick={() => onNavigate('reports')}>
               <div className="text-[10px] font-bold text-accent uppercase mb-1 tracking-wider">Juros Recebidos</div>
               <div className="text-lg font-bold font-mono text-accent">R$ {fmt(stats.interestReceived)}</div>
+              <div className="text-[9px] text-accent/60 mt-0.5">cobrado e pago</div>
             </div>
-            <div className="bg-warning/5 border border-warning/20 p-3 rounded-lg cursor-pointer hover:bg-warning/10 transition-colors" onClick={() => onNavigate('due-dates', 'overdue')}>
-              <div className="text-[10px] font-bold text-warning uppercase mb-1 tracking-wider">Juros a Receber</div>
-              <div className="text-lg font-bold font-mono text-warning">R$ {fmt(stats.interestPending)}</div>
+            <div className="bg-danger/5 border border-danger/20 p-3 rounded-lg cursor-pointer hover:bg-danger/10 transition-colors" onClick={() => onNavigate('due-dates', 'overdue')}>
+              <div className="text-[10px] font-bold text-danger uppercase mb-1 tracking-wider">Juros em Atraso</div>
+              <div className="text-lg font-bold font-mono text-danger">R$ {fmt(stats.interestPending)}</div>
+              <div className="text-[9px] text-danger/60 mt-0.5">acumulado nas atrasadas</div>
+            </div>
+            <div className="col-span-2 bg-warning/5 border border-warning/20 p-3 rounded-lg">
+              <div className="text-[10px] font-bold text-warning uppercase mb-1 tracking-wider">Juros Projetado — se ficarem 30 dias em atraso</div>
+              <div className="text-lg font-bold font-mono text-warning">R$ {fmt(stats.projectedInterest)}</div>
+              <div className="text-[9px] text-warning/60 mt-0.5">estimativa sobre parcelas pendentes com juros configurados</div>
             </div>
           </div>
         </div>
