@@ -124,42 +124,169 @@ const ClientForm = ({ initial, onSave, onClose }: { initial?: Partial<Client>; o
 
 // ─── ContractForm ─────────────────────────────────────────────────────────────
 
+const BILLING_TYPES = [
+  { id: 'monthly', label: 'Mensal' },
+  { id: 'biweekly', label: 'Quinzenal' },
+  { id: 'weekly', label: 'Semanal' },
+  { id: 'daily', label: 'Diária' },
+] as const;
+
+const Toggle = ({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) => (
+  <div className="flex items-center justify-between py-2.5 px-3 bg-bg border border-border rounded-lg">
+    <span className="text-xs text-text-dim">{label}</span>
+    <button
+      type="button"
+      onClick={() => onChange(!checked)}
+      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none ${checked ? 'bg-accent' : 'bg-border'}`}
+    >
+      <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform duration-200 ${checked ? 'translate-x-4' : 'translate-x-0'}`} />
+    </button>
+  </div>
+);
+
 const ContractForm = ({ clients, onSave, onClose }: { clients: Client[]; onSave: (d: any) => void; onClose: () => void }) => {
   const settings = dataService.getSettings();
   const today = format(new Date(), 'yyyy-MM-dd');
   const [form, setForm] = useState({
     clientId: '', description: '', totalAmount: '', installmentsCount: '1',
     firstPaymentDate: today, startDate: today, lateInterestRate: String(settings.compoundInterestRate),
+    billingType: 'monthly' as 'monthly' | 'biweekly' | 'weekly' | 'daily',
+    skipNonBusinessDays: false,
+    applyInterestOnValue: false,
+    interestOnValueRate: '0',
+    applyLateInterest: true,
   });
   const set = (k: string) => (e: any) => setForm(f => ({ ...f, [k]: e.target.value }));
   const amount = parseFloat(form.totalAmount) || 0;
   const count = parseInt(form.installmentsCount) || 1;
-  const installAmt = amount > 0 ? (amount / count).toFixed(2) : '0,00';
+  const interestRate = parseFloat(form.interestOnValueRate) || 0;
+  const baseInstall = amount > 0 ? amount / count : 0;
+  const interestPerInstall = form.applyInterestOnValue ? baseInstall * (interestRate / 100) : 0;
+  const installAmt = (baseInstall + interestPerInstall).toFixed(2);
+
   return (
-    <form className="space-y-4" onSubmit={e => { e.preventDefault(); onSave({ ...form, totalAmount: amount, installmentsCount: count, lateInterestRate: parseFloat(form.lateInterestRate) || 0, status: 'active' }); }}>
+    <form className="space-y-4" onSubmit={e => {
+      e.preventDefault();
+      onSave({
+        ...form,
+        totalAmount: amount,
+        installmentsCount: count,
+        lateInterestRate: form.applyLateInterest ? (parseFloat(form.lateInterestRate) || 0) : 0,
+        interestOnValueRate: form.applyInterestOnValue ? interestRate : 0,
+        status: 'active',
+      });
+    }}>
       <Field label="Cliente *">
         <Select required value={form.clientId} onChange={set('clientId')}>
           <option value="">Selecione um cliente...</option>
           {clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
         </Select>
       </Field>
-      <Field label="Descrição *"><Input required value={form.description} onChange={set('description')} placeholder="Ex: Empréstimo R$ 1.000" /></Field>
-      <div className="grid grid-cols-2 gap-3">
-        <Field label="Valor Total (R$) *"><Input required type="number" min="0.01" step="0.01" value={form.totalAmount} onChange={set('totalAmount')} placeholder="1000.00" /></Field>
-        <Field label="Nº de Parcelas *"><Input required type="number" min="1" max="360" value={form.installmentsCount} onChange={set('installmentsCount')} /></Field>
+      <Field label="Descrição">
+        <Input value={form.description} onChange={set('description')} placeholder="Ex: Serviço de consultoria" />
+      </Field>
+
+      {/* Tipo de Cobrança */}
+      <div>
+        <label className="block text-[11px] font-medium text-text-dim uppercase tracking-wider mb-2">Tipo de Cobrança</label>
+        <div className="grid grid-cols-4 gap-2">
+          {BILLING_TYPES.map(bt => (
+            <button
+              key={bt.id}
+              type="button"
+              onClick={() => setForm(f => ({ ...f, billingType: bt.id }))}
+              className={`py-2 rounded-lg text-xs font-semibold border transition-all ${form.billingType === bt.id ? 'bg-accent text-bg border-accent' : 'bg-bg border-border text-text-dim hover:border-accent/40'}`}
+            >
+              {bt.label}
+            </button>
+          ))}
+        </div>
+        <div className="mt-2">
+          <Toggle
+            checked={form.skipNonBusinessDays}
+            onChange={v => setForm(f => ({ ...f, skipNonBusinessDays: v }))}
+            label="Pular dias não úteis — Escolha quais dias pular nas cobranças"
+          />
+        </div>
       </div>
-      <div className="grid grid-cols-2 gap-3">
-        <Field label="1º Vencimento *"><Input required type="date" value={form.firstPaymentDate} onChange={set('firstPaymentDate')} /></Field>
-        <Field label="Juros/dia (%) *"><Input required type="number" min="0" step="0.01" value={form.lateInterestRate} onChange={set('lateInterestRate')} /></Field>
+
+      {/* Valores */}
+      <div>
+        <label className="block text-[11px] font-medium text-text-dim uppercase tracking-wider mb-2">Valores</label>
+        <Field label="Valor Total (R$) *">
+          <Input required type="number" min="0.01" step="0.01" value={form.totalAmount} onChange={set('totalAmount')} placeholder="0,00" />
+        </Field>
+        <div className="mt-3 space-y-2">
+          <Toggle
+            checked={form.applyInterestOnValue}
+            onChange={v => setForm(f => ({ ...f, applyInterestOnValue: v }))}
+            label="Adicionar Juros — Aplicar juros sobre o valor"
+          />
+          {form.applyInterestOnValue && (
+            <div className="pl-3 border-l-2 border-accent/30">
+              <Field label="Taxa de Juros (% sobre o valor)">
+                <Input type="number" min="0" step="0.01" value={form.interestOnValueRate} onChange={set('interestOnValueRate')} placeholder="0.00" />
+              </Field>
+            </div>
+          )}
+        </div>
       </div>
+
+      <Field label="Nº de Parcelas *">
+        <Input required type="number" min="1" max="360" value={form.installmentsCount} onChange={set('installmentsCount')} />
+      </Field>
+
+      {/* Juros por Atraso */}
+      <div>
+        <label className="block text-[11px] font-medium text-text-dim uppercase tracking-wider mb-2">Juros por Atraso</label>
+        <Toggle
+          checked={form.applyLateInterest}
+          onChange={v => setForm(f => ({ ...f, applyLateInterest: v }))}
+          label="Cobrar juros por dia de atraso no pagamento"
+        />
+        {form.applyLateInterest && (
+          <div className="mt-2 pl-3 border-l-2 border-danger/30">
+            <Field label="Taxa de Juros/dia (%)">
+              <Input required type="number" min="0" step="0.01" value={form.lateInterestRate} onChange={set('lateInterestRate')} />
+            </Field>
+          </div>
+        )}
+      </div>
+
+      {/* Datas */}
+      <div>
+        <label className="block text-[11px] font-medium text-text-dim uppercase tracking-wider mb-2">Datas</label>
+        <div className="space-y-3">
+          <Field label="Data de Início">
+            <Input type="date" value={form.startDate} onChange={set('startDate')} />
+            <p className="text-[10px] text-text-dim mt-1">Data de referência do contrato. Não afeta os vencimentos.</p>
+          </Field>
+          <Field label="Primeira Data de Pagamento *">
+            <Input required type="date" value={form.firstPaymentDate} onChange={set('firstPaymentDate')} />
+            <p className="text-[10px] text-text-dim mt-1">Escolha a data do primeiro pagamento. As próximas parcelas serão no mesmo dia de cada mês.</p>
+          </Field>
+        </div>
+      </div>
+
+      <Field label="Observações">
+        <textarea
+          value={(form as any).notes ?? ''}
+          onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
+          placeholder="Anotações sobre o contrato..."
+          rows={3}
+          className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-sm text-text-main outline-none focus:border-accent/50 transition-colors placeholder:text-text-dim/40 resize-none"
+        />
+      </Field>
+
       {amount > 0 && (
         <div className="bg-accent/5 border border-accent/20 rounded-lg p-3 text-xs text-text-dim">
           <span className="text-accent font-bold">{count}x</span> de <span className="text-text-main font-bold">R$ {installAmt}</span>
-          <span className="ml-2 text-text-dim">· Juros compostos de {form.lateInterestRate}%/dia sobre atrasos</span>
+          {form.applyInterestOnValue && <span className="ml-2 text-warning">· {interestRate}% juros sobre valor</span>}
+          {form.applyLateInterest && <span className="ml-2 text-text-dim">· {form.lateInterestRate}%/dia sobre atrasos</span>}
         </div>
       )}
       <div className="flex gap-3 pt-2">
-        <Btn type="submit">Criar Contrato</Btn>
+        <Btn type="submit">Salvar</Btn>
         <Btn type="button" variant="ghost" onClick={onClose}>Cancelar</Btn>
       </div>
     </form>
@@ -324,8 +451,38 @@ const ContractsView = ({ contracts, clients, installments, onRefresh }: any) => 
   const handleSave = async (data: any) => { await dataService.addContract(data); setModal(false); onRefresh(); };
   const handleDelete = async (id: string) => { if (!window.confirm('Excluir este contrato e suas parcelas?')) return; await dataService.deleteContract(id); onRefresh(); };
 
+  const contractStats = dataService.getStats();
+  const enrichedAll = dataService.getEnrichedInstallments();
+  const veryOverdue = enrichedAll.filter((i: EnrichedInstallment) => i.status === 'overdue' && i.daysLate > 30);
+  const interestReceived = enrichedAll.filter((i: EnrichedInstallment) => i.status === 'paid').reduce((s: number, i: EnrichedInstallment) => s + (i.computedInterest || 0), 0);
+  const interestPending = enrichedAll.filter((i: EnrichedInstallment) => i.status !== 'paid').reduce((s: number, i: EnrichedInstallment) => s + (i.computedInterest || 0), 0);
+
+  const summaryCards = [
+    { label: 'Contratos', value: String(contracts.length), color: 'text-text-main' },
+    { label: 'Valor Previsto', value: `R$ ${fmt(contractStats.totalValue)}`, color: 'text-text-main' },
+    { label: 'Recebido', value: `R$ ${fmt(contractStats.received)}`, color: 'text-accent' },
+    { label: 'Valor Total', value: `R$ ${fmt(contractStats.totalValue)}`, color: 'text-text-main' },
+    { label: 'Em Aberto', value: `R$ ${fmt(contractStats.pending)}`, color: 'text-warning' },
+    { label: 'Em Atraso', value: `R$ ${fmt(contractStats.overdue)}`, color: 'text-danger' },
+    { label: 'Juros Total', value: `R$ ${fmt(contractStats.totalInterest)}`, color: 'text-warning' },
+    { label: 'Juros Recebido', value: `R$ ${fmt(interestReceived)}`, color: 'text-accent' },
+    { label: 'Juros a Receber', value: `R$ ${fmt(interestPending)}`, color: 'text-warning' },
+    { label: 'Muito Atraso', value: `R$ ${fmt(veryOverdue.reduce((s: number, i: EnrichedInstallment) => s + i.totalDue, 0))}`, color: 'text-danger' },
+    { label: 'Multas Recebidas', value: `R$ ${fmt(interestReceived)}`, color: 'text-accent' },
+  ];
+
   return (
     <div className="space-y-4">
+      {/* Cards de Resumo */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+        {summaryCards.map(s => (
+          <div key={s.label} className="panel-card p-4">
+            <p className="text-[10px] text-text-dim uppercase tracking-widest mb-1 font-medium">{s.label}</p>
+            <p className={`text-sm font-bold ${s.color}`}>{s.value}</p>
+          </div>
+        ))}
+      </div>
+
       <div className="panel-card overflow-hidden">
         <div className="p-6 border-b border-border flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
           <h3 className="text-base font-semibold">Contratos <span className="text-text-dim font-normal text-xs ml-1">({contracts.length})</span></h3>
