@@ -1,4 +1,4 @@
-import { format, addMonths, differenceInDays } from 'date-fns';
+import { format, addMonths, addDays, isWeekend, differenceInDays } from 'date-fns';
 import {
   collection,
   addDoc,
@@ -66,6 +66,12 @@ export interface Contract {
   startDate: string;
   status: 'active' | 'completed' | 'cancelled';
   lateInterestRate: number;
+  // Tipo de cobrança — define o intervalo entre parcelas
+  billingType?: 'monthly' | 'biweekly' | 'weekly' | 'daily';
+  // Tipo de juros por atraso
+  interestType?: 'compound' | 'simple';
+  // Pular finais de semana nos vencimentos
+  skipNonBusinessDays?: boolean;
 }
 
 export interface Client {
@@ -205,20 +211,97 @@ class DataService {
     });
   }
 
-  // ─── Compound Interest ───────────────────────────────────────────────────────
+  // ─── Cálculo de Data de Vencimento ───────────────────────────────────────────
 
-  calculateCompoundInterest(
+  /**
+   * Calcula a data de vencimento correta pelo calendário:
+   * - Mensal   → mesmo dia do mês seguinte (addMonths — respeita meses curtos)
+   * - Quinzenal → a cada 15 dias corridos
+   * - Semanal  → a cada 7 dias corridos
+   * - Diária   → a cada 1 dia corrido
+   * - skipNonBusinessDays → avança para a próxima segunda se cair em fim de semana
+   */
+  getDueDate(base: Date, index: number, billingType: string, skip: boolean): string {
+    let date: Date;
+    switch (billingType) {
+      case 'daily':
+        date = addDays(base, index);
+        break;
+      case 'weekly':
+        date = addDays(base, index * 7);
+        break;
+      case 'biweekly':
+        // Quinzenal = a cada 15 dias (padrão brasileiro)
+        date = addDays(base, index * 15);
+        break;
+      case 'monthly':
+      default:
+        // addMonths respeita meses curtos (ex: 31/jan → 28/fev)
+        date = addMonths(base, index);
+        break;
+    }
+
+    if (skip) {
+      // Pular fins de semana → avança para segunda-feira
+      while (isWeekend(date)) {
+        date = addDays(date, 1);
+      }
+      // Feriados nacionais fixos brasileiros
+      const BR_HOLIDAYS: string[] = [];
+      for (let year = 2024; year <= 2035; year++) {
+        BR_HOLIDAYS.push(
+          `${year}-01-01`, // Confraternização
+          `${year}-04-21`, // Tiradentes
+          `${year}-05-01`, // Dia do Trabalho
+          `${year}-09-07`, // Independência
+          `${year}-10-12`, // N. Sra. Aparecida
+          `${year}-11-02`, // Finados
+          `${year}-11-15`, // Proclamação da República
+          `${year}-11-20`, // Consciência Negra
+          `${year}-12-25`, // Natal
+        );
+      }
+      while (BR_HOLIDAYS.includes(format(date, 'yyyy-MM-dd')) || isWeekend(date)) {
+        date = addDays(date, 1);
+      }
+    }
+
+    return format(date, 'yyyy-MM-dd');
+  }
+
+  // ─── Cálculo de Juros ────────────────────────────────────────────────────────
+
+  /**
+   * Calcula juros por atraso:
+   * - Composto: Principal × (1 + taxa/100)^dias  — padrão bancário brasileiro
+   * - Simples:  Principal × taxa/100 × dias      — mais comum em acordos informais
+   */
+  calculateInterest(
     principal: number,
     daysLate: number,
     dailyRate?: number,
+    interestType: 'compound' | 'simple' = 'compound',
   ): number {
     const settings = this.getSettings();
     const rate = dailyRate ?? settings.compoundInterestRate;
     const grace = settings.graceDays;
     const effectiveDays = Math.max(0, daysLate - grace);
     if (effectiveDays <= 0 || rate <= 0) return 0;
-    const total = principal * Math.pow(1 + rate / 100, effectiveDays);
-    return parseFloat((total - principal).toFixed(2));
+
+    let interest: number;
+    if (interestType === 'simple') {
+      // Juros simples: I = P × r × t
+      interest = principal * (rate / 100) * effectiveDays;
+    } else {
+      // Juros compostos: A = P(1+r)^t — I = A - P
+      interest = principal * Math.pow(1 + rate / 100, effectiveDays) - principal;
+    }
+    return parseFloat(interest.toFixed(2));
+  }
+
+  // Mantido para retrocompatibilidade
+  calculateCompoundInterest(principal: number, daysLate: number, dailyRate?: number): number {
+    return this.calculateInterest(principal, daysLate, dailyRate, 'compound');
   }
 
   // ─── Enriched Installments ───────────────────────────────────────────────────
@@ -233,9 +316,10 @@ class DataService {
       let computedStatus = inst.status;
       if (inst.status !== 'paid' && daysLate > 0) computedStatus = 'overdue';
       const contractRate = contract?.lateInterestRate ?? 0;
+      const interestType = contract?.interestType ?? 'compound';
       const interest =
         computedStatus === 'overdue'
-          ? this.calculateCompoundInterest(inst.amount, daysLate, contractRate || undefined)
+          ? this.calculateInterest(inst.amount, daysLate, contractRate || undefined, interestType)
           : 0;
       return {
         ...inst,
@@ -383,6 +467,8 @@ class DataService {
   async addContract(contract: Omit<Contract, 'id'>) {
     const installmentAmount = parseFloat((contract.totalAmount / contract.installmentsCount).toFixed(2));
     const baseDate = new Date(contract.firstPaymentDate + 'T00:00:00');
+    const billingType = contract.billingType ?? 'monthly';
+    const skip = contract.skipNonBusinessDays ?? false;
     const user = await this.getCurrentUser();
 
     if (!user) {
@@ -392,7 +478,7 @@ class DataService {
         this.installments.push({
           id: `i-${Date.now()}-${i}`,
           contractId: nc.id, number: i + 1, amount: installmentAmount,
-          dueDate: format(addMonths(baseDate, i), 'yyyy-MM-dd'), status: 'pending',
+          dueDate: this.getDueDate(baseDate, i, billingType, skip), status: 'pending',
         });
       }
       this.notify();
@@ -406,7 +492,7 @@ class DataService {
         const iRef = doc(collection(db, 'users', user.uid, 'installments'));
         batch.set(iRef, {
           contractId: cRef.id, number: i + 1, amount: installmentAmount,
-          dueDate: format(addMonths(baseDate, i), 'yyyy-MM-dd'), status: 'pending',
+          dueDate: this.getDueDate(baseDate, i, billingType, skip), status: 'pending',
         });
       }
       await batch.commit();
@@ -419,7 +505,7 @@ class DataService {
         this.installments.push({
           id: `i-${Date.now()}-${i}`,
           contractId: nc.id, number: i + 1, amount: installmentAmount,
-          dueDate: format(addMonths(baseDate, i), 'yyyy-MM-dd'), status: 'pending',
+          dueDate: this.getDueDate(baseDate, i, billingType, skip), status: 'pending',
         });
       }
       this.notify();
