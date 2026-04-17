@@ -3,7 +3,7 @@ import {
   Users, FileText, Calendar, BarChart3, Settings, LogOut, Search, Bell, Plus, Menu, X,
   CreditCard, TrendingUp, AlertCircle, CheckCircle2, Clock, ArrowUpRight, ArrowDownRight,
   Trash2, Edit3, MessageCircle, UserPlus, Download, Eye, EyeOff, Send, Phone, RefreshCw,
-  Shield, ChevronDown, ChevronUp, Printer,
+  Shield, ChevronDown, ChevronUp, Printer, Mail, Lock, UserCheck, ArrowLeft,
 } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -13,7 +13,10 @@ import { motion, AnimatePresence } from 'motion/react';
 import { format, differenceInDays } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { auth } from './firebase';
-import { onAuthStateChanged, signInWithPopup, GoogleAuthProvider, signOut } from 'firebase/auth';
+import {
+  onAuthStateChanged, signInWithPopup, GoogleAuthProvider, signOut,
+  createUserWithEmailAndPassword, signInWithEmailAndPassword, sendPasswordResetEmail,
+} from 'firebase/auth';
 import {
   dataService, Client, Contract, Installment, EnrichedInstallment,
   AppSettings, SubLogin,
@@ -37,16 +40,29 @@ const statusBadge = (status: string) => {
   return <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-tight ${map[status] || 'bg-border text-text-dim'}`}>{label[status] || status}</span>;
 };
 
+const authErrorMsg = (code: string) => {
+  const map: Record<string, string> = {
+    'auth/email-already-in-use': 'Este e-mail já está em uso.',
+    'auth/invalid-email': 'E-mail inválido.',
+    'auth/weak-password': 'A senha deve ter pelo menos 6 caracteres.',
+    'auth/user-not-found': 'Usuário não encontrado.',
+    'auth/wrong-password': 'Senha incorreta.',
+    'auth/invalid-credential': 'E-mail ou senha inválidos.',
+    'auth/too-many-requests': 'Muitas tentativas. Tente novamente mais tarde.',
+  };
+  return map[code] || 'Ocorreu um erro. Tente novamente.';
+};
+
 // ─── Modal ───────────────────────────────────────────────────────────────────
 
-const Modal = ({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) => (
+const Modal = ({ title, onClose, children, wide }: { title: string; onClose: () => void; children: React.ReactNode; wide?: boolean }) => (
   <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onClose}>
     <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
     <motion.div
       initial={{ opacity: 0, scale: 0.95 }}
       animate={{ opacity: 1, scale: 1 }}
       exit={{ opacity: 0, scale: 0.95 }}
-      className="relative bg-card border border-border rounded-xl w-full max-w-lg max-h-[90vh] overflow-y-auto shadow-2xl"
+      className={`relative bg-card border border-border rounded-xl w-full ${wide ? 'max-w-3xl' : 'max-w-lg'} max-h-[90vh] overflow-y-auto shadow-2xl`}
       onClick={e => e.stopPropagation()}
     >
       <div className="flex items-center justify-between px-6 py-4 border-b border-border sticky top-0 bg-card z-10">
@@ -84,8 +100,11 @@ const Btn = ({ children, variant = 'primary', ...props }: { variant?: 'primary' 
 
 // ─── StatCard ────────────────────────────────────────────────────────────────
 
-const StatCard = ({ title, value, subValue, trend, icon: Icon, color }: any) => (
-  <div className="panel-card p-5 flex flex-col justify-between hover:border-accent/40 transition-all group">
+const StatCard = ({ title, value, subValue, trend, icon: Icon, color, onClick }: any) => (
+  <div
+    className={`panel-card p-5 flex flex-col justify-between transition-all group ${onClick ? 'cursor-pointer hover:border-accent/40 hover:shadow-lg hover:shadow-accent/5' : 'hover:border-accent/40'}`}
+    onClick={onClick}
+  >
     <div className="flex justify-between items-start mb-4">
       <div className={`p-2 rounded-lg ${color} bg-opacity-10 text-opacity-90`}><Icon size={20} /></div>
       {trend && (
@@ -99,6 +118,7 @@ const StatCard = ({ title, value, subValue, trend, icon: Icon, color }: any) => 
       <h3 className="text-2xl font-bold tracking-tight text-text-main">{value}</h3>
       {subValue && <p className="text-[11px] text-text-dim mt-1">{subValue}</p>}
     </div>
+    {onClick && <p className="text-[10px] text-accent/60 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">Clique para ver detalhes →</p>}
   </div>
 );
 
@@ -186,42 +206,28 @@ const ContractForm = ({ clients, onSave, onClose }: { clients: Client[]; onSave:
         <Input value={form.description} onChange={set('description')} placeholder="Ex: Serviço de consultoria" />
       </Field>
 
-      {/* Tipo de Cobrança */}
       <div>
         <label className="block text-[11px] font-medium text-text-dim uppercase tracking-wider mb-2">Tipo de Cobrança</label>
         <div className="grid grid-cols-4 gap-2">
           {BILLING_TYPES.map(bt => (
-            <button
-              key={bt.id}
-              type="button"
-              onClick={() => setForm(f => ({ ...f, billingType: bt.id }))}
-              className={`py-2 rounded-lg text-xs font-semibold border transition-all ${form.billingType === bt.id ? 'bg-accent text-bg border-accent' : 'bg-bg border-border text-text-dim hover:border-accent/40'}`}
-            >
+            <button key={bt.id} type="button" onClick={() => setForm(f => ({ ...f, billingType: bt.id }))}
+              className={`py-2 rounded-lg text-xs font-semibold border transition-all ${form.billingType === bt.id ? 'bg-accent text-bg border-accent' : 'bg-bg border-border text-text-dim hover:border-accent/40'}`}>
               {bt.label}
             </button>
           ))}
         </div>
         <div className="mt-2">
-          <Toggle
-            checked={form.skipNonBusinessDays}
-            onChange={v => setForm(f => ({ ...f, skipNonBusinessDays: v }))}
-            label="Pular dias não úteis — Escolha quais dias pular nas cobranças"
-          />
+          <Toggle checked={form.skipNonBusinessDays} onChange={v => setForm(f => ({ ...f, skipNonBusinessDays: v }))} label="Pular dias não úteis — Escolha quais dias pular nas cobranças" />
         </div>
       </div>
 
-      {/* Valores */}
       <div>
         <label className="block text-[11px] font-medium text-text-dim uppercase tracking-wider mb-2">Valores</label>
         <Field label="Valor Total (R$) *">
           <Input required type="number" min="0.01" step="0.01" value={form.totalAmount} onChange={set('totalAmount')} placeholder="0,00" />
         </Field>
         <div className="mt-3 space-y-2">
-          <Toggle
-            checked={form.applyInterestOnValue}
-            onChange={v => setForm(f => ({ ...f, applyInterestOnValue: v }))}
-            label="Adicionar Juros — Aplicar juros sobre o valor"
-          />
+          <Toggle checked={form.applyInterestOnValue} onChange={v => setForm(f => ({ ...f, applyInterestOnValue: v }))} label="Adicionar Juros — Aplicar juros sobre o valor" />
           {form.applyInterestOnValue && (
             <div className="pl-3 border-l-2 border-accent/30">
               <Field label="Taxa de Juros (% sobre o valor)">
@@ -236,14 +242,9 @@ const ContractForm = ({ clients, onSave, onClose }: { clients: Client[]; onSave:
         <Input required type="number" min="1" max="360" value={form.installmentsCount} onChange={set('installmentsCount')} />
       </Field>
 
-      {/* Juros por Atraso */}
       <div>
         <label className="block text-[11px] font-medium text-text-dim uppercase tracking-wider mb-2">Juros por Atraso</label>
-        <Toggle
-          checked={form.applyLateInterest}
-          onChange={v => setForm(f => ({ ...f, applyLateInterest: v }))}
-          label="Cobrar juros por dia de atraso no pagamento"
-        />
+        <Toggle checked={form.applyLateInterest} onChange={v => setForm(f => ({ ...f, applyLateInterest: v }))} label="Cobrar juros por dia de atraso no pagamento" />
         {form.applyLateInterest && (
           <div className="mt-2 pl-3 border-l-2 border-danger/30">
             <Field label="Taxa de Juros/dia (%)">
@@ -253,7 +254,6 @@ const ContractForm = ({ clients, onSave, onClose }: { clients: Client[]; onSave:
         )}
       </div>
 
-      {/* Datas */}
       <div>
         <label className="block text-[11px] font-medium text-text-dim uppercase tracking-wider mb-2">Datas</label>
         <div className="space-y-3">
@@ -295,13 +295,13 @@ const ContractForm = ({ clients, onSave, onClose }: { clients: Client[]; onSave:
 
 // ─── DashboardView ────────────────────────────────────────────────────────────
 
-const DashboardView = ({ stats, revenueData }: any) => (
+const DashboardView = ({ stats, revenueData, onNavigate }: any) => (
   <div className="space-y-6">
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
-      <StatCard title="Total Cobrado" value={`R$ ${fmt(stats.totalValue)}`} subValue={`${stats.activeContracts} contratos ativos`} icon={FileText} color="bg-accent text-accent" trend={{ value: 12, positive: true }} />
-      <StatCard title="Recebido" value={`R$ ${fmt(stats.received)}`} subValue={`${stats.totalValue > 0 ? ((stats.received / stats.totalValue) * 100).toFixed(1) : 0}% de liquidação`} icon={CheckCircle2} color="bg-accent text-accent" trend={{ value: 3.4, positive: true }} />
-      <StatCard title="Pendente" value={`R$ ${fmt(stats.pending)}`} subValue="Aguardando pagamento" icon={Clock} color="bg-warning text-warning" />
-      <StatCard title="Em Atraso" value={`R$ ${fmt(stats.overdue)}`} subValue={`${stats.overdueCount} parcelas · R$ ${fmt(stats.totalInterest)} em juros`} icon={AlertCircle} color="bg-danger text-danger" trend={{ value: 0.2, positive: false }} />
+      <StatCard title="Total Cobrado" value={`R$ ${fmt(stats.totalValue)}`} subValue={`${stats.activeContracts} contratos ativos`} icon={FileText} color="bg-accent text-accent" trend={{ value: 12, positive: true }} onClick={() => onNavigate('contracts')} />
+      <StatCard title="Recebido" value={`R$ ${fmt(stats.received)}`} subValue={`${stats.totalValue > 0 ? ((stats.received / stats.totalValue) * 100).toFixed(1) : 0}% de liquidação`} icon={CheckCircle2} color="bg-accent text-accent" trend={{ value: 3.4, positive: true }} onClick={() => onNavigate('due-dates', 'paid')} />
+      <StatCard title="Pendente" value={`R$ ${fmt(stats.pending)}`} subValue="Aguardando pagamento" icon={Clock} color="bg-warning text-warning" onClick={() => onNavigate('due-dates', 'pending')} />
+      <StatCard title="Em Atraso" value={`R$ ${fmt(stats.overdue)}`} subValue={`${stats.overdueCount} parcelas · R$ ${fmt(stats.totalInterest)} em juros`} icon={AlertCircle} color="bg-danger text-danger" trend={{ value: 0.2, positive: false }} onClick={() => onNavigate('due-dates', 'overdue')} />
     </div>
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
       <div className="lg:col-span-2 panel-card p-6">
@@ -339,8 +339,12 @@ const DashboardView = ({ stats, revenueData }: any) => (
           </ResponsiveContainer>
         </div>
         <div className="space-y-3 mt-4">
-          {[{ label: 'Pago', color: 'bg-accent', val: stats.received }, { label: 'Pendente', color: 'bg-warning', val: stats.pending }, { label: 'Atrasado', color: 'bg-danger', val: stats.overdue }].map(r => (
-            <div key={r.label} className="flex justify-between items-center text-[12px]">
+          {[
+            { label: 'Pago', color: 'bg-accent', val: stats.received, filter: 'paid' },
+            { label: 'Pendente', color: 'bg-warning', val: stats.pending, filter: 'pending' },
+            { label: 'Atrasado', color: 'bg-danger', val: stats.overdue, filter: 'overdue' },
+          ].map(r => (
+            <div key={r.label} className="flex justify-between items-center text-[12px] cursor-pointer hover:bg-white/[0.02] rounded px-1 py-0.5 transition-colors" onClick={() => onNavigate('due-dates', r.filter)}>
               <span className="flex items-center text-text-dim"><div className={`w-2 h-2 ${r.color} rounded-full mr-2`} />{r.label}</span>
               <span className="font-semibold text-text-main">R$ {fmt(r.val)}</span>
             </div>
@@ -351,12 +355,123 @@ const DashboardView = ({ stats, revenueData }: any) => (
   </div>
 );
 
+// ─── ClientHistoryModal ───────────────────────────────────────────────────────
+
+const ClientHistoryModal = ({ client, contracts, onClose, onRefresh }: { client: Client; contracts: Contract[]; onClose: () => void; onRefresh: () => void }) => {
+  const clientContracts = contracts.filter(c => c.clientId === client.id);
+  const enriched = dataService.getEnrichedInstallments().filter(i => i.clientId === client.id);
+  const [expandedContract, setExpandedContract] = useState<string | null>(null);
+
+  const totalValue = enriched.reduce((a, i) => a + i.amount, 0);
+  const received = enriched.filter(i => i.status === 'paid').reduce((a, i) => a + i.amount, 0);
+  const pending = enriched.filter(i => i.status === 'pending').reduce((a, i) => a + i.amount, 0);
+  const overdue = enriched.filter(i => i.status === 'overdue').reduce((a, i) => a + i.totalDue, 0);
+
+  return (
+    <Modal title={`Histórico — ${client.name}`} onClose={onClose} wide>
+      <div className="space-y-5">
+        {/* Info do cliente */}
+        <div className="grid grid-cols-2 gap-3 bg-bg border border-border rounded-xl p-4">
+          <div>
+            <p className="text-[10px] text-text-dim uppercase tracking-wider mb-0.5">Telefone</p>
+            <p className="text-sm font-medium text-text-main font-mono">{client.phone || '—'}</p>
+          </div>
+          <div>
+            <p className="text-[10px] text-text-dim uppercase tracking-wider mb-0.5">CPF / CNPJ</p>
+            <p className="text-sm font-medium text-text-main font-mono">{client.document || '—'}</p>
+          </div>
+          <div>
+            <p className="text-[10px] text-text-dim uppercase tracking-wider mb-0.5">E-mail</p>
+            <p className="text-sm font-medium text-text-main truncate">{client.email || '—'}</p>
+          </div>
+          <div>
+            <p className="text-[10px] text-text-dim uppercase tracking-wider mb-0.5">Endereço</p>
+            <p className="text-sm font-medium text-text-main truncate">{client.address || '—'}</p>
+          </div>
+        </div>
+
+        {/* Resumo financeiro */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {[
+            { label: 'Total', val: totalValue, cls: 'text-text-main' },
+            { label: 'Recebido', val: received, cls: 'text-accent' },
+            { label: 'Pendente', val: pending, cls: 'text-warning' },
+            { label: 'Em Atraso', val: overdue, cls: 'text-danger' },
+          ].map(s => (
+            <div key={s.label} className="panel-card p-3">
+              <p className="text-[10px] text-text-dim uppercase tracking-widest mb-1">{s.label}</p>
+              <p className={`text-sm font-bold ${s.cls}`}>R$ {fmt(s.val)}</p>
+            </div>
+          ))}
+        </div>
+
+        {/* Contratos e parcelas */}
+        {clientContracts.length === 0 ? (
+          <p className="text-center text-text-dim text-sm italic py-4">Nenhum contrato registrado.</p>
+        ) : (
+          <div className="space-y-3">
+            <p className="text-[11px] font-bold text-text-dim uppercase tracking-widest">Contratos ({clientContracts.length})</p>
+            {clientContracts.map(c => {
+              const insts = enriched.filter(i => i.contractId === c.id);
+              const paid = insts.filter(i => i.status === 'paid').length;
+              const isOpen = expandedContract === c.id;
+              return (
+                <div key={c.id} className="border border-border rounded-xl overflow-hidden">
+                  <div
+                    className="px-4 py-3 flex items-center gap-3 cursor-pointer hover:bg-white/[0.02] transition-colors"
+                    onClick={() => setExpandedContract(isOpen ? null : c.id)}
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-medium text-sm text-text-main">{c.description || 'Contrato'}</span>
+                        {statusBadge(c.status)}
+                      </div>
+                      <div className="text-xs text-text-dim mt-0.5">
+                        {c.installmentsCount}x R$ {fmt(c.totalAmount / c.installmentsCount)} · Início: {fmtDate(c.startDate)}
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <div className="font-bold text-sm text-text-main">R$ {fmt(c.totalAmount)}</div>
+                      <div className="text-[11px] text-text-dim">{paid}/{c.installmentsCount} pagas</div>
+                    </div>
+                    {isOpen ? <ChevronUp size={14} className="text-text-dim shrink-0" /> : <ChevronDown size={14} className="text-text-dim shrink-0" />}
+                  </div>
+                  {isOpen && (
+                    <div className="bg-bg border-t border-border/40 px-4 py-3">
+                      <div className="space-y-2">
+                        {insts.map(inst => (
+                          <div key={inst.id} className="flex items-center gap-3 text-xs">
+                            <span className="text-text-dim w-16 shrink-0">Parcela {inst.number}</span>
+                            <span className="font-mono text-text-main w-24 shrink-0">R$ {fmt(inst.amount)}</span>
+                            <span className="text-text-dim w-24 shrink-0">{fmtDate(inst.dueDate)}</span>
+                            {statusBadge(inst.status)}
+                            {inst.status === 'overdue' && <span className="text-danger text-[10px]">+R$ {fmt(inst.computedInterest)} ({inst.daysLate}d)</span>}
+                            {inst.status !== 'paid'
+                              ? <button onClick={() => { dataService.markInstallmentPaid(inst.id); onRefresh(); }} className="ml-auto px-2 py-0.5 rounded bg-accent/10 text-accent text-[10px] hover:bg-accent/20 transition-colors">Marcar Pago</button>
+                              : <button onClick={() => { dataService.markInstallmentPending(inst.id); onRefresh(); }} className="ml-auto px-2 py-0.5 rounded bg-sidebar text-text-dim text-[10px] hover:bg-white/5 transition-colors border border-border">Desfazer</button>
+                            }
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </Modal>
+  );
+};
+
 // ─── ClientsView ──────────────────────────────────────────────────────────────
 
 const ClientsView = ({ clients, contracts, onRefresh }: { clients: Client[]; contracts: Contract[]; onRefresh: () => void }) => {
   const [search, setSearch] = useState('');
   const [modal, setModal] = useState<'add' | 'edit' | null>(null);
   const [editing, setEditing] = useState<Client | null>(null);
+  const [historyClient, setHistoryClient] = useState<Client | null>(null);
 
   const filtered = clients.filter(c =>
     c.name.toLowerCase().includes(search.toLowerCase()) ||
@@ -371,8 +486,9 @@ const ClientsView = ({ clients, contracts, onRefresh }: { clients: Client[]; con
     setModal(null); setEditing(null); onRefresh();
   };
 
-  const handleDelete = async (id: string) => {
-    if (!window.confirm('Excluir cliente e todos os seus contratos?')) return;
+  const handleDelete = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!window.confirm('Excluir cliente e todos os seus contratos e parcelas?')) return;
     await dataService.deleteClient(id); onRefresh();
   };
 
@@ -402,20 +518,30 @@ const ClientsView = ({ clients, contracts, onRefresh }: { clients: Client[]; con
               <tr><td colSpan={5} className="px-6 py-8 text-center text-text-dim text-sm italic">Nenhum cliente encontrado.</td></tr>
             )}
             {filtered.map(c => (
-              <tr key={c.id} className="hover:bg-white/[0.02] transition-colors group text-sm">
+              <tr
+                key={c.id}
+                className="hover:bg-white/[0.02] transition-colors group text-sm cursor-pointer"
+                onClick={() => setHistoryClient(c)}
+                title="Clique para ver histórico"
+              >
                 <td className="px-6 py-4">
                   <div className="flex items-center">
                     <div className="w-8 h-8 rounded bg-sidebar flex items-center justify-center text-accent font-bold mr-3 border border-border group-hover:border-accent/30 text-xs shrink-0">{c.name.charAt(0)}</div>
-                    <div><div className="font-medium text-text-main">{c.name}</div><div className="text-[11px] text-text-dim">{c.email}</div></div>
+                    <div>
+                      <div className="font-medium text-text-main">{c.name}</div>
+                      <div className="text-[11px] text-text-dim">{c.email}</div>
+                    </div>
                   </div>
                 </td>
                 <td className="px-6 py-4 text-xs text-text-dim font-mono">{c.phone}</td>
                 <td className="px-6 py-4 text-xs text-text-dim font-mono">{c.document || '—'}</td>
-                <td className="px-6 py-4 text-xs"><span className="px-2 py-0.5 rounded bg-sidebar border border-border text-text-dim">{contractCount(c.id)} contrato(s)</span></td>
+                <td className="px-6 py-4 text-xs">
+                  <span className="px-2 py-0.5 rounded bg-sidebar border border-border text-text-dim">{contractCount(c.id)} contrato(s)</span>
+                </td>
                 <td className="px-6 py-4">
-                  <div className="flex gap-1">
-                    <button onClick={() => { setEditing(c); setModal('edit'); }} className="p-1.5 hover:bg-sidebar rounded text-text-dim hover:text-text-main transition-all"><Edit3 size={13} /></button>
-                    <button onClick={() => handleDelete(c.id)} className="p-1.5 hover:bg-danger/10 rounded text-text-dim hover:text-danger transition-all"><Trash2 size={13} /></button>
+                  <div className="flex gap-1" onClick={e => e.stopPropagation()}>
+                    <button onClick={e => { e.stopPropagation(); setEditing(c); setModal('edit'); }} className="p-1.5 hover:bg-sidebar rounded text-text-dim hover:text-text-main transition-all"><Edit3 size={13} /></button>
+                    <button onClick={e => handleDelete(c.id, e)} className="p-1.5 hover:bg-danger/10 rounded text-text-dim hover:text-danger transition-all"><Trash2 size={13} /></button>
                   </div>
                 </td>
               </tr>
@@ -429,6 +555,14 @@ const ClientsView = ({ clients, contracts, onRefresh }: { clients: Client[]; con
             <ClientForm initial={editing ?? undefined} onSave={handleSave} onClose={() => { setModal(null); setEditing(null); }} />
           </Modal>
         )}
+        {historyClient && (
+          <ClientHistoryModal
+            client={historyClient}
+            contracts={contracts}
+            onClose={() => setHistoryClient(null)}
+            onRefresh={onRefresh}
+          />
+        )}
       </AnimatePresence>
     </div>
   );
@@ -436,7 +570,7 @@ const ClientsView = ({ clients, contracts, onRefresh }: { clients: Client[]; con
 
 // ─── ContractsView ────────────────────────────────────────────────────────────
 
-const ContractsView = ({ contracts, clients, installments, onRefresh }: any) => {
+const ContractsView = ({ contracts, clients, installments, onRefresh, onNavigate }: any) => {
   const [search, setSearch] = useState('');
   const [modal, setModal] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -458,27 +592,31 @@ const ContractsView = ({ contracts, clients, installments, onRefresh }: any) => 
   const interestPending = enrichedAll.filter((i: EnrichedInstallment) => i.status !== 'paid').reduce((s: number, i: EnrichedInstallment) => s + (i.computedInterest || 0), 0);
 
   const summaryCards = [
-    { label: 'Contratos', value: String(contracts.length), color: 'text-text-main' },
-    { label: 'Valor Previsto', value: `R$ ${fmt(contractStats.totalValue)}`, color: 'text-text-main' },
-    { label: 'Recebido', value: `R$ ${fmt(contractStats.received)}`, color: 'text-accent' },
-    { label: 'Valor Total', value: `R$ ${fmt(contractStats.totalValue)}`, color: 'text-text-main' },
-    { label: 'Em Aberto', value: `R$ ${fmt(contractStats.pending)}`, color: 'text-warning' },
-    { label: 'Em Atraso', value: `R$ ${fmt(contractStats.overdue)}`, color: 'text-danger' },
-    { label: 'Juros Total', value: `R$ ${fmt(contractStats.totalInterest)}`, color: 'text-warning' },
-    { label: 'Juros Recebido', value: `R$ ${fmt(interestReceived)}`, color: 'text-accent' },
-    { label: 'Juros a Receber', value: `R$ ${fmt(interestPending)}`, color: 'text-warning' },
-    { label: 'Muito Atraso', value: `R$ ${fmt(veryOverdue.reduce((s: number, i: EnrichedInstallment) => s + i.totalDue, 0))}`, color: 'text-danger' },
-    { label: 'Multas Recebidas', value: `R$ ${fmt(interestReceived)}`, color: 'text-accent' },
+    { label: 'Contratos', value: String(contracts.length), color: 'text-text-main', nav: undefined },
+    { label: 'Valor Previsto', value: `R$ ${fmt(contractStats.totalValue)}`, color: 'text-text-main', nav: undefined },
+    { label: 'Recebido', value: `R$ ${fmt(contractStats.received)}`, color: 'text-accent', nav: 'paid' },
+    { label: 'Valor Total', value: `R$ ${fmt(contractStats.totalValue)}`, color: 'text-text-main', nav: undefined },
+    { label: 'Em Aberto', value: `R$ ${fmt(contractStats.pending)}`, color: 'text-warning', nav: 'pending' },
+    { label: 'Em Atraso', value: `R$ ${fmt(contractStats.overdue)}`, color: 'text-danger', nav: 'overdue' },
+    { label: 'Juros Total', value: `R$ ${fmt(contractStats.totalInterest)}`, color: 'text-warning', nav: undefined },
+    { label: 'Juros Recebido', value: `R$ ${fmt(interestReceived)}`, color: 'text-accent', nav: undefined },
+    { label: 'Juros a Receber', value: `R$ ${fmt(interestPending)}`, color: 'text-warning', nav: undefined },
+    { label: 'Muito Atraso', value: `R$ ${fmt(veryOverdue.reduce((s: number, i: EnrichedInstallment) => s + i.totalDue, 0))}`, color: 'text-danger', nav: 'overdue' },
+    { label: 'Multas Recebidas', value: `R$ ${fmt(interestReceived)}`, color: 'text-accent', nav: undefined },
   ];
 
   return (
     <div className="space-y-4">
-      {/* Cards de Resumo */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
         {summaryCards.map(s => (
-          <div key={s.label} className="panel-card p-4">
+          <div
+            key={s.label}
+            className={`panel-card p-4 transition-all ${s.nav ? 'cursor-pointer hover:border-accent/40' : ''}`}
+            onClick={() => s.nav && onNavigate('due-dates', s.nav)}
+          >
             <p className="text-[10px] text-text-dim uppercase tracking-widest mb-1 font-medium">{s.label}</p>
             <p className={`text-sm font-bold ${s.color}`}>{s.value}</p>
+            {s.nav && <p className="text-[9px] text-accent/50 mt-1">Ver detalhes →</p>}
           </div>
         ))}
       </div>
@@ -558,11 +696,14 @@ const ContractsView = ({ contracts, clients, installments, onRefresh }: any) => 
 
 // ─── DueDatesView ─────────────────────────────────────────────────────────────
 
-const DueDatesView = ({ onRefresh }: { onRefresh: () => void }) => {
-  const [filter, setFilter] = useState<'all' | 'pending' | 'overdue' | 'paid'>('all');
+const DueDatesView = ({ onRefresh, initialFilter = 'all' }: { onRefresh: () => void; initialFilter?: 'all' | 'pending' | 'overdue' | 'paid' }) => {
+  const [filter, setFilter] = useState<'all' | 'pending' | 'overdue' | 'paid'>(initialFilter);
   const [search, setSearch] = useState('');
   const enriched = dataService.getEnrichedInstallments();
   const stats = dataService.getStats();
+
+  // Sync if initialFilter changes from outside (navigation)
+  useEffect(() => { setFilter(initialFilter); }, [initialFilter]);
 
   const filtered = enriched.filter(i => {
     const matchStatus = filter === 'all' || i.status === filter;
@@ -574,12 +715,12 @@ const DueDatesView = ({ onRefresh }: { onRefresh: () => void }) => {
     <div className="space-y-5">
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {[
-          { label: 'Total', value: `R$ ${fmt(stats.totalValue)}`, color: 'text-text-main' },
-          { label: 'Recebido', value: `R$ ${fmt(stats.received)}`, color: 'text-accent' },
-          { label: 'Pendente', value: `R$ ${fmt(stats.pending)}`, color: 'text-warning' },
-          { label: 'Em Atraso', value: `R$ ${fmt(stats.overdue)}`, color: 'text-danger' },
+          { label: 'Total', value: `R$ ${fmt(stats.totalValue)}`, color: 'text-text-main', f: 'all' },
+          { label: 'Recebido', value: `R$ ${fmt(stats.received)}`, color: 'text-accent', f: 'paid' },
+          { label: 'Pendente', value: `R$ ${fmt(stats.pending)}`, color: 'text-warning', f: 'pending' },
+          { label: 'Em Atraso', value: `R$ ${fmt(stats.overdue)}`, color: 'text-danger', f: 'overdue' },
         ].map(s => (
-          <div key={s.label} className="panel-card p-4">
+          <div key={s.label} className={`panel-card p-4 cursor-pointer transition-all hover:border-accent/40 ${filter === s.f ? 'border-accent/40 bg-accent/5' : ''}`} onClick={() => setFilter(s.f as any)}>
             <p className="text-[10px] text-text-dim uppercase tracking-widest mb-1">{s.label}</p>
             <p className={`text-lg font-bold ${s.color}`}>{s.value}</p>
           </div>
@@ -640,7 +781,7 @@ const DueDatesView = ({ onRefresh }: { onRefresh: () => void }) => {
 
 // ─── AnalysisView ─────────────────────────────────────────────────────────────
 
-const AnalysisView = ({ revenueData, stats }: any) => (
+const AnalysisView = ({ revenueData, stats, onNavigate }: any) => (
   <div className="space-y-6">
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
       <section className="panel-card p-6">
@@ -668,17 +809,20 @@ const AnalysisView = ({ revenueData, stats }: any) => (
           <div className="px-2 py-0.5 rounded-full bg-accent/10 text-accent text-[9px] font-bold">LIVE</div>
         </div>
         <div className="space-y-4 flex-1">
-          <div className="bg-accent/5 border border-dashed border-accent p-4 rounded-lg">
+          <div className="bg-accent/5 border border-dashed border-accent p-4 rounded-lg cursor-pointer hover:bg-accent/10 transition-colors" onClick={() => onNavigate('due-dates', 'paid')}>
             <div className="text-[10px] font-bold text-accent uppercase mb-2 tracking-wider">Taxa de Liquidação</div>
             <div className="text-2xl font-bold font-mono">{stats.totalValue > 0 ? ((stats.received / stats.totalValue) * 100).toFixed(1) : '0.0'}%</div>
+            <div className="text-[10px] text-accent/60 mt-1">Ver parcelas pagas →</div>
           </div>
-          <div className="bg-danger/5 border border-dashed border-danger/30 p-4 rounded-lg">
+          <div className="bg-danger/5 border border-dashed border-danger/30 p-4 rounded-lg cursor-pointer hover:bg-danger/10 transition-colors" onClick={() => onNavigate('due-dates', 'overdue')}>
             <div className="text-[10px] font-bold text-danger uppercase mb-2 tracking-wider">Inadimplência</div>
             <div className="text-2xl font-bold font-mono text-danger">{stats.totalValue > 0 ? ((stats.overdue / stats.totalValue) * 100).toFixed(1) : '0.0'}%</div>
+            <div className="text-[10px] text-danger/60 mt-1">Ver parcelas em atraso →</div>
           </div>
-          <div className="bg-warning/5 border border-dashed border-warning/30 p-4 rounded-lg">
+          <div className="bg-warning/5 border border-dashed border-warning/30 p-4 rounded-lg cursor-pointer hover:bg-warning/10 transition-colors" onClick={() => onNavigate('reports')}>
             <div className="text-[10px] font-bold text-warning uppercase mb-2 tracking-wider">Total de Juros Acumulados</div>
             <div className="text-2xl font-bold font-mono text-warning">R$ {fmt(stats.totalInterest)}</div>
+            <div className="text-[10px] text-warning/60 mt-1">Ver relatório completo →</div>
           </div>
         </div>
       </section>
@@ -687,14 +831,15 @@ const AnalysisView = ({ revenueData, stats }: any) => (
       <h3 className="text-base font-semibold mb-6">Indicadores Chave</h3>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-5">
         {[
-          { label: 'Clientes', value: String(stats.totalClients), color: 'text-accent' },
-          { label: 'Contratos Ativos', value: String(stats.activeContracts), color: 'text-accent' },
-          { label: 'Parcelas Atrasadas', value: String(stats.overdueCount), color: 'text-danger' },
-          { label: 'Ticket Médio', value: stats.activeContracts > 0 ? `R$ ${fmt(stats.totalValue / stats.activeContracts)}` : '—', color: 'text-warning' },
+          { label: 'Clientes', value: String(stats.totalClients), color: 'text-accent', tab: 'clients', filter: undefined },
+          { label: 'Contratos Ativos', value: String(stats.activeContracts), color: 'text-accent', tab: 'contracts', filter: undefined },
+          { label: 'Parcelas Atrasadas', value: String(stats.overdueCount), color: 'text-danger', tab: 'due-dates', filter: 'overdue' },
+          { label: 'Ticket Médio', value: stats.activeContracts > 0 ? `R$ ${fmt(stats.totalValue / stats.activeContracts)}` : '—', color: 'text-warning', tab: 'contracts', filter: undefined },
         ].map(item => (
-          <div key={item.label} className="bg-bg border border-border rounded-lg p-5">
+          <div key={item.label} className="bg-bg border border-border rounded-lg p-5 cursor-pointer hover:border-accent/40 transition-all" onClick={() => onNavigate(item.tab, item.filter)}>
             <p className="text-[10px] text-text-dim uppercase tracking-widest font-bold mb-2">{item.label}</p>
             <p className={`text-xl font-bold ${item.color}`}>{item.value}</p>
+            <p className="text-[9px] text-accent/50 mt-1">Ver detalhes →</p>
           </div>
         ))}
       </div>
@@ -704,11 +849,33 @@ const AnalysisView = ({ revenueData, stats }: any) => (
 
 // ─── ReportsView ──────────────────────────────────────────────────────────────
 
-const ReportsView = ({ clients, contracts }: any) => {
-  const stats = dataService.getStats();
-  const enriched = dataService.getEnrichedInstallments();
-  const overdue = enriched.filter(i => i.status === 'overdue');
+const ReportsView = ({ clients, contracts, onNavigate }: any) => {
+  const enrichedAll = dataService.getEnrichedInstallments();
   const settings = dataService.getSettings();
+  const today = format(new Date(), 'yyyy-MM-dd');
+  const firstOfMonth = format(new Date(new Date().getFullYear(), new Date().getMonth(), 1), 'yyyy-MM-dd');
+
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'paid' | 'pending' | 'overdue'>('all');
+
+  // Apply filters
+  const enriched = enrichedAll.filter(i => {
+    if (statusFilter !== 'all' && i.status !== statusFilter) return false;
+    if (dateFrom && i.dueDate < dateFrom) return false;
+    if (dateTo && i.dueDate > dateTo) return false;
+    return true;
+  });
+
+  const overdue = enriched.filter(i => i.status === 'overdue');
+  const filteredStats = {
+    totalValue: enriched.reduce((a, i) => a + i.amount, 0),
+    received: enriched.filter(i => i.status === 'paid').reduce((a, i) => a + i.amount, 0),
+    pending: enriched.filter(i => i.status === 'pending').reduce((a, i) => a + i.amount, 0),
+    overdue: overdue.reduce((a, i) => a + i.totalDue, 0),
+  };
+
+  const hasFilter = dateFrom || dateTo || statusFilter !== 'all';
 
   const printReport = () => {
     const content = `
@@ -726,12 +893,13 @@ const ReportsView = ({ clients, contracts }: any) => {
         @media print{body{padding:16px}}
       </style></head><body>
       <h1>${settings.companyName}</h1>
-      <p style="color:#666">Relatório gerado em ${format(new Date(), "dd/MM/yyyy 'às' HH:mm")}</p>
+      <p style="color:#666">Relatório gerado em ${format(new Date(), "dd/MM/yyyy 'às' HH:mm")}${hasFilter ? ' · Filtrado' : ''}</p>
+      ${dateFrom || dateTo ? `<p style="color:#666;font-size:11px">Período: ${dateFrom ? fmtDate(dateFrom) : 'início'} até ${dateTo ? fmtDate(dateTo) : 'hoje'}</p>` : ''}
       <div class="summary-grid">
-        <div class="summary-item"><div class="summary-label">Total Cobrado</div><div class="summary-value">R$ ${fmt(stats.totalValue)}</div></div>
-        <div class="summary-item"><div class="summary-label">Recebido</div><div class="summary-value" style="color:#065f46">R$ ${fmt(stats.received)}</div></div>
-        <div class="summary-item"><div class="summary-label">Pendente</div><div class="summary-value" style="color:#92400e">R$ ${fmt(stats.pending)}</div></div>
-        <div class="summary-item"><div class="summary-label">Em Atraso</div><div class="summary-value" style="color:#991b1b">R$ ${fmt(stats.overdue)}</div></div>
+        <div class="summary-item"><div class="summary-label">Total Cobrado</div><div class="summary-value">R$ ${fmt(filteredStats.totalValue)}</div></div>
+        <div class="summary-item"><div class="summary-label">Recebido</div><div class="summary-value" style="color:#065f46">R$ ${fmt(filteredStats.received)}</div></div>
+        <div class="summary-item"><div class="summary-label">Pendente</div><div class="summary-value" style="color:#92400e">R$ ${fmt(filteredStats.pending)}</div></div>
+        <div class="summary-item"><div class="summary-label">Em Atraso</div><div class="summary-value" style="color:#991b1b">R$ ${fmt(filteredStats.overdue)}</div></div>
       </div>
       <h2>Parcelas em Atraso (${overdue.length})</h2>
       <table><thead><tr><th>Cliente</th><th>Contrato</th><th>Parcela</th><th>Vencimento</th><th>Valor</th><th>Juros</th><th>Total</th><th>Dias</th></tr></thead>
@@ -753,25 +921,80 @@ const ReportsView = ({ clients, contracts }: any) => {
 
   return (
     <div className="space-y-5">
+      {/* Filtros de período */}
+      <div className="panel-card p-5">
+        <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-end justify-between">
+          <div>
+            <h3 className="text-sm font-semibold mb-1">Filtrar Relatório</h3>
+            <p className="text-xs text-text-dim">Selecione período e status para filtrar os dados exibidos.</p>
+          </div>
+          <div className="flex flex-wrap gap-3 items-end">
+            <div>
+              <label className="block text-[10px] font-bold text-text-dim uppercase tracking-wider mb-1.5">De</label>
+              <Input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} className="text-xs py-1.5 w-36" />
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold text-text-dim uppercase tracking-wider mb-1.5">Até</label>
+              <Input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className="text-xs py-1.5 w-36" />
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold text-text-dim uppercase tracking-wider mb-1.5">Status</label>
+              <Select value={statusFilter} onChange={e => setStatusFilter(e.target.value as any)} className="text-xs py-1.5 w-36">
+                <option value="all">Todos</option>
+                <option value="paid">Pagos</option>
+                <option value="pending">Pendentes</option>
+                <option value="overdue">Atrasados</option>
+              </Select>
+            </div>
+            <div className="flex gap-2">
+              {hasFilter && (
+                <Btn variant="ghost" onClick={() => { setDateFrom(''); setDateTo(''); setStatusFilter('all'); }} className="py-1.5">
+                  <X size={12} /> Limpar
+                </Btn>
+              )}
+              <div className="flex gap-2">
+                <Btn variant="ghost" onClick={() => { setDateFrom(firstOfMonth); setDateTo(today); }} className="py-1.5">Mês Atual</Btn>
+              </div>
+            </div>
+          </div>
+        </div>
+        {hasFilter && (
+          <div className="mt-3 pt-3 border-t border-border/40 text-[11px] text-text-dim">
+            Exibindo <span className="text-accent font-bold">{enriched.length}</span> parcelas
+            {dateFrom && ` a partir de ${fmtDate(dateFrom)}`}
+            {dateTo && ` até ${fmtDate(dateTo)}`}
+            {statusFilter !== 'all' && ` · status: ${statusFilter === 'paid' ? 'Pagos' : statusFilter === 'pending' ? 'Pendentes' : 'Atrasados'}`}
+          </div>
+        )}
+      </div>
+
       <div className="flex justify-between items-center">
         <p className="text-sm text-text-dim">Visualize e imprima os relatórios do sistema.</p>
         <Btn onClick={printReport}><Printer size={14} /> Imprimir / Salvar PDF</Btn>
       </div>
+
+      {/* Summary cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {[
-          { l: 'Total Cobrado', v: `R$ ${fmt(stats.totalValue)}`, c: 'text-text-main' },
-          { l: 'Recebido', v: `R$ ${fmt(stats.received)}`, c: 'text-accent' },
-          { l: 'Pendente', v: `R$ ${fmt(stats.pending)}`, c: 'text-warning' },
-          { l: 'Em Atraso + Juros', v: `R$ ${fmt(stats.overdue)}`, c: 'text-danger' },
+          { l: 'Total Cobrado', v: `R$ ${fmt(filteredStats.totalValue)}`, c: 'text-text-main', nav: 'contracts', filter: undefined },
+          { l: 'Recebido', v: `R$ ${fmt(filteredStats.received)}`, c: 'text-accent', nav: 'due-dates', filter: 'paid' },
+          { l: 'Pendente', v: `R$ ${fmt(filteredStats.pending)}`, c: 'text-warning', nav: 'due-dates', filter: 'pending' },
+          { l: 'Em Atraso + Juros', v: `R$ ${fmt(filteredStats.overdue)}`, c: 'text-danger', nav: 'due-dates', filter: 'overdue' },
         ].map(s => (
-          <div key={s.l} className="panel-card p-5">
+          <div key={s.l} className="panel-card p-5 cursor-pointer hover:border-accent/40 transition-all" onClick={() => onNavigate(s.nav, s.filter)}>
             <p className="text-[10px] text-text-dim uppercase tracking-widest mb-1">{s.l}</p>
             <p className={`text-xl font-bold ${s.c}`}>{s.v}</p>
+            <p className="text-[9px] text-accent/50 mt-1">Ver detalhes →</p>
           </div>
         ))}
       </div>
+
+      {/* Overdue table */}
       <div className="panel-card overflow-hidden">
-        <div className="px-6 py-4 border-b border-border"><h3 className="font-semibold text-sm">Parcelas em Atraso</h3></div>
+        <div className="px-6 py-4 border-b border-border flex items-center justify-between">
+          <h3 className="font-semibold text-sm">Parcelas em Atraso {hasFilter && <span className="text-text-dim font-normal text-xs">(filtrado)</span>}</h3>
+          <span className="text-xs text-danger font-mono">{overdue.length} parcela(s)</span>
+        </div>
         <div className="overflow-x-auto">
           <table className="w-full text-left">
             <thead><tr className="text-[11px] uppercase text-text-dim">{['Cliente', 'Contrato', 'Parc.', 'Vcto', 'Principal', 'Juros Compostos', 'Total', 'Atraso'].map(h => <th key={h} className="px-5 py-3 font-medium border-b border-border">{h}</th>)}</tr></thead>
@@ -807,7 +1030,6 @@ const WhatsAppView = () => {
   const [customMsg, setCustomMsg] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  // Relatório em massa
   const [reportPhone, setReportPhone] = useState('');
   const [reportDays, setReportDays] = useState('7');
   const [previewMsg, setPreviewMsg] = useState('');
@@ -838,30 +1060,19 @@ const WhatsAppView = () => {
     window.open(`https://wa.me/55${phone}?text=${encodeURIComponent(msg)}`, '_blank');
   };
 
-  const openPreview = (title: string, msg: string) => {
-    setPreviewTitle(title);
-    setPreviewMsg(msg);
-    setShowPreview(true);
-  };
+  const openPreview = (title: string, msg: string) => { setPreviewTitle(title); setPreviewMsg(msg); setShowPreview(true); };
 
   const buildOverdueReport = () => {
     const overdue = enriched.filter(i => i.status === 'overdue');
     if (overdue.length === 0) return '✅ Nenhuma parcela em atraso no momento!';
     const today = format(new Date(), 'dd/MM/yyyy');
-    let msg = `📋 *RELATÓRIO DE VENCIDOS*\n`;
-    msg += `📅 Data: ${today}\n`;
-    msg += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    let msg = `📋 *RELATÓRIO DE VENCIDOS*\n📅 Data: ${today}\n━━━━━━━━━━━━━━━━━━━━━\n\n`;
     overdue.forEach((i, idx) => {
-      msg += `*${idx + 1}. ${i.clientName}*\n`;
-      msg += `   📄 ${i.contractDescription}\n`;
-      msg += `   📅 Venceu: ${fmtDate(i.dueDate)} (${i.daysLate}d atraso)\n`;
-      msg += `   💰 Principal: R$ ${fmt(i.amount)}\n`;
+      msg += `*${idx + 1}. ${i.clientName}*\n   📄 ${i.contractDescription}\n   📅 Venceu: ${fmtDate(i.dueDate)} (${i.daysLate}d atraso)\n   💰 Principal: R$ ${fmt(i.amount)}\n`;
       if (i.computedInterest > 0) msg += `   📈 Juros: R$ ${fmt(i.computedInterest)}\n`;
       msg += `   💳 *Total: R$ ${fmt(i.totalDue)}*\n\n`;
     });
-    msg += `━━━━━━━━━━━━━━━━━━━━━\n`;
-    msg += `📊 *Total em atraso: R$ ${fmt(overdue.reduce((s, i) => s + i.totalDue, 0))}*\n`;
-    msg += `🔢 Parcelas: ${overdue.length}`;
+    msg += `━━━━━━━━━━━━━━━━━━━━━\n📊 *Total em atraso: R$ ${fmt(overdue.reduce((s, i) => s + i.totalDue, 0))}*\n🔢 Parcelas: ${overdue.length}`;
     return msg;
   };
 
@@ -874,19 +1085,12 @@ const WhatsAppView = () => {
     }).sort((a, b) => a.dueDate.localeCompare(b.dueDate));
     if (upcoming.length === 0) return `✅ Nenhum vencimento nos próximos ${days} dias!`;
     const today = format(new Date(), 'dd/MM/yyyy');
-    let msg = `⏰ *RELATÓRIO — PRESTES A VENCER*\n`;
-    msg += `📅 Data: ${today} · Próximos ${days} dias\n`;
-    msg += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    let msg = `⏰ *RELATÓRIO — PRESTES A VENCER*\n📅 Data: ${today} · Próximos ${days} dias\n━━━━━━━━━━━━━━━━━━━━━\n\n`;
     upcoming.forEach((i, idx) => {
       const diff = differenceInDays(new Date(i.dueDate + 'T00:00:00'), new Date());
-      msg += `*${idx + 1}. ${i.clientName}*\n`;
-      msg += `   📄 ${i.contractDescription}\n`;
-      msg += `   📅 Vence: ${fmtDate(i.dueDate)} ${diff === 0 ? '*(HOJE)*' : diff === 1 ? '*(amanhã)*' : `*(em ${diff}d)*`}\n`;
-      msg += `   💳 *Valor: R$ ${fmt(i.amount)}*\n\n`;
+      msg += `*${idx + 1}. ${i.clientName}*\n   📄 ${i.contractDescription}\n   📅 Vence: ${fmtDate(i.dueDate)} ${diff === 0 ? '*(HOJE)*' : diff === 1 ? '*(amanhã)*' : `*(em ${diff}d)*`}\n   💳 *Valor: R$ ${fmt(i.amount)}*\n\n`;
     });
-    msg += `━━━━━━━━━━━━━━━━━━━━━\n`;
-    msg += `📊 *Total a receber: R$ ${fmt(upcoming.reduce((s, i) => s + i.amount, 0))}*\n`;
-    msg += `🔢 Parcelas: ${upcoming.length}`;
+    msg += `━━━━━━━━━━━━━━━━━━━━━\n📊 *Total a receber: R$ ${fmt(upcoming.reduce((s, i) => s + i.amount, 0))}*\n🔢 Parcelas: ${upcoming.length}`;
     return msg;
   };
 
@@ -894,87 +1098,45 @@ const WhatsAppView = () => {
     const today = format(new Date(), 'dd/MM/yyyy');
     const overdue = enriched.filter(i => i.status === 'overdue');
     const pending = enriched.filter(i => i.status === 'pending');
-    const paid = enriched.filter(i => i.status === 'paid');
-    let msg = `📊 *RELATÓRIO GERAL DA CARTEIRA*\n`;
-    msg += `📅 ${today}\n`;
-    msg += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
-    msg += `✅ *Recebido:* R$ ${fmt(stats.received)}\n`;
-    msg += `⏳ *Pendente:* R$ ${fmt(stats.pending)} (${pending.length} parcelas)\n`;
-    msg += `🚨 *Em Atraso:* R$ ${fmt(stats.overdue)} (${overdue.length} parcelas)\n`;
-    msg += `📈 *Juros acumulados:* R$ ${fmt(stats.totalInterest)}\n\n`;
-    msg += `━━━━━━━━━━━━━━━━━━━━━\n`;
-    msg += `💼 *Total da carteira: R$ ${fmt(stats.totalValue)}*\n`;
-    msg += `👥 Contratos ativos: ${stats.activeContracts}\n`;
+    let msg = `📊 *RELATÓRIO GERAL DA CARTEIRA*\n📅 ${today}\n━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    msg += `✅ *Recebido:* R$ ${fmt(stats.received)}\n⏳ *Pendente:* R$ ${fmt(stats.pending)} (${pending.length} parcelas)\n🚨 *Em Atraso:* R$ ${fmt(stats.overdue)} (${overdue.length} parcelas)\n📈 *Juros acumulados:* R$ ${fmt(stats.totalInterest)}\n\n`;
+    msg += `━━━━━━━━━━━━━━━━━━━━━\n💼 *Total da carteira: R$ ${fmt(stats.totalValue)}*\n👥 Contratos ativos: ${stats.activeContracts}\n`;
     if (overdue.length > 0) {
       msg += `\n⚠️ *Top inadimplentes:*\n`;
-      const topOverdue = [...overdue].sort((a, b) => b.totalDue - a.totalDue).slice(0, 3);
-      topOverdue.forEach(i => { msg += `   • ${i.clientName}: R$ ${fmt(i.totalDue)} (${i.daysLate}d)\n`; });
+      [...overdue].sort((a, b) => b.totalDue - a.totalDue).slice(0, 3).forEach(i => { msg += `   • ${i.clientName}: R$ ${fmt(i.totalDue)} (${i.daysLate}d)\n`; });
     }
     return msg;
   };
 
   const reportButtons = [
-    {
-      label: '🚨 Vencidos',
-      desc: 'Lista todos os atrasados com juros',
-      color: 'border-danger/30 text-danger bg-danger/5 hover:bg-danger/10',
-      build: buildOverdueReport,
-      title: 'Relatório de Vencidos',
-    },
-    {
-      label: '⏰ Prestes a Vencer',
-      desc: `Vencimentos nos próximos ${reportDays} dias`,
-      color: 'border-warning/30 text-warning bg-warning/5 hover:bg-warning/10',
-      build: buildUpcomingReport,
-      title: 'Prestes a Vencer',
-    },
-    {
-      label: '📊 Relatório Total',
-      desc: 'Resumo completo da carteira',
-      color: 'border-accent/30 text-accent bg-accent/5 hover:bg-accent/10',
-      build: buildTotalReport,
-      title: 'Relatório Total da Carteira',
-    },
+    { label: '🚨 Vencidos', desc: 'Lista todos os atrasados com juros', color: 'border-danger/30 text-danger bg-danger/5 hover:bg-danger/10', build: buildOverdueReport, title: 'Relatório de Vencidos' },
+    { label: '⏰ Prestes a Vencer', desc: `Vencimentos nos próximos ${reportDays} dias`, color: 'border-warning/30 text-warning bg-warning/5 hover:bg-warning/10', build: buildUpcomingReport, title: 'Prestes a Vencer' },
+    { label: '📊 Relatório Total', desc: 'Resumo completo da carteira', color: 'border-accent/30 text-accent bg-accent/5 hover:bg-accent/10', build: buildTotalReport, title: 'Relatório Total da Carteira' },
   ];
 
   return (
     <div className="space-y-5">
-
-      {/* Relatórios em Massa */}
       <div className="panel-card p-5 space-y-4">
         <div>
           <h3 className="font-semibold text-sm">Enviar Relatório via WhatsApp</h3>
           <p className="text-xs text-text-dim mt-0.5">Digite o número de destino e escolha o relatório para enviar.</p>
         </div>
-
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
             <label className="block text-[11px] font-medium text-text-dim uppercase tracking-wider mb-1.5">Número de Destino</label>
             <div className="flex gap-2 items-center">
               <span className="text-xs text-text-dim border border-border rounded-lg px-3 py-2 bg-sidebar shrink-0">🇧🇷 +55</span>
-              <input
-                value={reportPhone}
-                onChange={e => setReportPhone(e.target.value)}
-                placeholder="(11) 99999-9999"
-                className="flex-1 bg-bg border border-border rounded-lg px-3 py-2 text-sm text-text-main outline-none focus:border-accent/50 transition-colors placeholder:text-text-dim/40"
-              />
+              <input value={reportPhone} onChange={e => setReportPhone(e.target.value)} placeholder="(11) 99999-9999" className="flex-1 bg-bg border border-border rounded-lg px-3 py-2 text-sm text-text-main outline-none focus:border-accent/50 transition-colors placeholder:text-text-dim/40" />
             </div>
             <p className="text-[10px] text-text-dim mt-1">Pode ser o seu próprio número ou de um sócio.</p>
           </div>
           <div>
             <label className="block text-[11px] font-medium text-text-dim uppercase tracking-wider mb-1.5">Janela "Prestes a Vencer"</label>
-            <select
-              value={reportDays}
-              onChange={e => setReportDays(e.target.value)}
-              className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-sm text-text-main outline-none focus:border-accent/50"
-            >
-              {['3', '5', '7', '10', '15', '30'].map(d => (
-                <option key={d} value={d}>Próximos {d} dias</option>
-              ))}
+            <select value={reportDays} onChange={e => setReportDays(e.target.value)} className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-sm text-text-main outline-none focus:border-accent/50">
+              {['3', '5', '7', '10', '15', '30'].map(d => (<option key={d} value={d}>Próximos {d} dias</option>))}
             </select>
           </div>
         </div>
-
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           {reportButtons.map(btn => (
             <div key={btn.label} className={`border rounded-xl p-4 flex flex-col gap-3 transition-colors ${btn.color}`}>
@@ -983,62 +1145,35 @@ const WhatsAppView = () => {
                 <p className="text-[11px] opacity-70 mt-0.5">{btn.desc}</p>
               </div>
               <div className="flex gap-2 mt-auto">
-                <button
-                  onClick={() => openPreview(btn.title, btn.build())}
-                  className="flex-1 text-[11px] font-semibold py-1.5 rounded-lg border border-current/30 bg-black/10 hover:bg-black/20 transition-colors"
-                >
-                  👁 Prévia
-                </button>
-                <button
-                  onClick={() => sendReport(btn.build())}
-                  className="flex-1 text-[11px] font-bold py-1.5 rounded-lg bg-[#25D366]/20 text-[#25D366] border border-[#25D366]/30 hover:bg-[#25D366]/30 transition-colors flex items-center justify-center gap-1"
-                >
-                  <MessageCircle size={11} /> Enviar
-                </button>
+                <button onClick={() => openPreview(btn.title, btn.build())} className="flex-1 text-[11px] font-semibold py-1.5 rounded-lg border border-current/30 bg-black/10 hover:bg-black/20 transition-colors">👁 Prévia</button>
+                <button onClick={() => sendReport(btn.build())} className="flex-1 text-[11px] font-bold py-1.5 rounded-lg bg-[#25D366]/20 text-[#25D366] border border-[#25D366]/30 hover:bg-[#25D366]/30 transition-colors flex items-center justify-center gap-1"><MessageCircle size={11} /> Enviar</button>
               </div>
             </div>
           ))}
         </div>
       </div>
 
-      {/* Preview Modal */}
       <AnimatePresence>
         {showPreview && (
           <Modal title={`Prévia — ${previewTitle}`} onClose={() => setShowPreview(false)}>
             <div className="space-y-4">
               <div className="bg-[#075E54] rounded-xl p-4">
-                <div className="bg-[#DCF8C6] rounded-lg p-3 text-[#111] text-xs whitespace-pre-wrap font-mono leading-relaxed max-h-80 overflow-y-auto">
-                  {previewMsg}
-                </div>
+                <div className="bg-[#DCF8C6] rounded-lg p-3 text-[#111] text-xs whitespace-pre-wrap font-mono leading-relaxed max-h-80 overflow-y-auto">{previewMsg}</div>
               </div>
               <div className="flex gap-3">
-                <button
-                  onClick={() => { sendReport(previewMsg); setShowPreview(false); }}
-                  className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg bg-[#25D366] text-white text-xs font-bold hover:brightness-110 transition-all"
-                >
-                  <MessageCircle size={14} /> Enviar via WhatsApp
-                </button>
-                <button
-                  onClick={() => { navigator.clipboard.writeText(previewMsg); }}
-                  className="px-4 py-2.5 rounded-lg border border-border text-text-dim text-xs hover:bg-white/5 transition-colors"
-                >
-                  📋 Copiar
-                </button>
+                <button onClick={() => { sendReport(previewMsg); setShowPreview(false); }} className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg bg-[#25D366] text-white text-xs font-bold hover:brightness-110 transition-all"><MessageCircle size={14} /> Enviar via WhatsApp</button>
+                <button onClick={() => { navigator.clipboard.writeText(previewMsg); }} className="px-4 py-2.5 rounded-lg border border-border text-text-dim text-xs hover:bg-white/5 transition-colors">📋 Copiar</button>
               </div>
             </div>
           </Modal>
         )}
       </AnimatePresence>
 
-      {/* Mensagem individual personalizada */}
       <div className="panel-card p-5">
         <h3 className="font-semibold text-sm mb-4">Mensagem Individual Personalizada <span className="text-text-dim font-normal">(opcional — deixe vazio para usar template)</span></h3>
-        <textarea value={customMsg} onChange={e => setCustomMsg(e.target.value)} rows={3}
-          placeholder={`Template atual: ${settings.whatsappTemplate.slice(0, 60)}...`}
-          className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-sm text-text-main outline-none focus:border-accent/50 resize-none placeholder:text-text-dim/40" />
+        <textarea value={customMsg} onChange={e => setCustomMsg(e.target.value)} rows={3} placeholder={`Template atual: ${settings.whatsappTemplate.slice(0, 60)}...`} className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-sm text-text-main outline-none focus:border-accent/50 resize-none placeholder:text-text-dim/40" />
       </div>
 
-      {/* Envio individual */}
       <div className="panel-card overflow-hidden">
         <div className="p-5 border-b border-border flex items-center justify-between">
           <h3 className="font-semibold text-sm">Enviar Lembretes Individuais</h3>
@@ -1094,20 +1229,12 @@ const NotificationsView = () => {
 
   const sendTestNotification = () => {
     if (permission !== 'granted') { alert('Permissão não concedida. Habilite primeiro.'); return; }
-    new Notification('Niklaus Gestor', {
-      body: `Você tem ${overdue.length} parcela(s) em atraso e ${dueSoon.length} vencendo em breve.`,
-      icon: '/favicon.ico',
-    });
+    new Notification('Niklaus Gestor', { body: `Você tem ${overdue.length} parcela(s) em atraso e ${dueSoon.length} vencendo em breve.`, icon: '/favicon.ico' });
   };
 
   const notifyAll = () => {
     if (permission !== 'granted') { alert('Habilite as notificações primeiro.'); return; }
-    overdue.slice(0, 5).forEach(i => {
-      new Notification(`⚠ ${i.clientName} — Parcela Atrasada`, {
-        body: `R$ ${fmt(i.totalDue)} · ${i.daysLate} dias de atraso`,
-        icon: '/favicon.ico',
-      });
-    });
+    overdue.slice(0, 5).forEach(i => { new Notification(`⚠ ${i.clientName} — Parcela Atrasada`, { body: `R$ ${fmt(i.totalDue)} · ${i.daysLate} dias de atraso`, icon: '/favicon.ico' }); });
   };
 
   return (
@@ -1201,9 +1328,7 @@ const SubLoginsView = ({ onRefresh }: { onRefresh: () => void }) => {
     viewer: Object.fromEntries(PERMISSIONS.map(p => [p.key, false])) as any,
   };
 
-  const handleRoleChange = (role: SubLogin['role']) => {
-    setForm(f => ({ ...f, role, ...rolePresets[role] }));
-  };
+  const handleRoleChange = (role: SubLogin['role']) => { setForm(f => ({ ...f, role, ...rolePresets[role] })); };
 
   const handleSave = () => {
     if (!form.name || !form.email) return;
@@ -1302,17 +1427,12 @@ const SettingsView = ({ onRefresh }: { onRefresh: () => void }) => {
 
   return (
     <div className="space-y-5 max-w-2xl">
-      {/* Juros */}
       <div className="panel-card p-6">
         <h3 className="font-semibold text-sm mb-1">Juros Compostos por Atraso</h3>
         <p className="text-xs text-text-dim mb-5">Calculado diariamente sobre o saldo devedor: <span className="font-mono text-accent">Total = Principal × (1 + taxa/100)^dias</span></p>
         <div className="grid grid-cols-2 gap-4 mb-4">
-          <Field label="Taxa diária (%)">
-            <Input type="number" min="0" step="0.01" value={form.compoundInterestRate} onChange={set('compoundInterestRate')} />
-          </Field>
-          <Field label="Carência (dias)">
-            <Input type="number" min="0" step="1" value={form.graceDays} onChange={set('graceDays')} />
-          </Field>
+          <Field label="Taxa diária (%)"><Input type="number" min="0" step="0.01" value={form.compoundInterestRate} onChange={set('compoundInterestRate')} /></Field>
+          <Field label="Carência (dias)"><Input type="number" min="0" step="1" value={form.graceDays} onChange={set('graceDays')} /></Field>
         </div>
         <div className="bg-accent/5 border border-accent/20 rounded-lg p-4 text-xs space-y-1">
           <p className="text-accent font-bold mb-2">Simulação de Juros Compostos</p>
@@ -1325,7 +1445,6 @@ const SettingsView = ({ onRefresh }: { onRefresh: () => void }) => {
         </div>
       </div>
 
-      {/* Empresa */}
       <div className="panel-card p-6">
         <h3 className="font-semibold text-sm mb-4">Dados da Empresa</h3>
         <div className="space-y-4">
@@ -1334,18 +1453,15 @@ const SettingsView = ({ onRefresh }: { onRefresh: () => void }) => {
         </div>
       </div>
 
-      {/* WhatsApp Templates */}
       <div className="panel-card p-6">
         <h3 className="font-semibold text-sm mb-2">Templates de Mensagem WhatsApp</h3>
         <p className="text-xs text-text-dim mb-4">Variáveis: <span className="font-mono text-accent">{'{nome}'} {'{valor}'} {'{data}'} {'{dias}'} {'{total}'}</span></p>
         <div className="space-y-4">
           <Field label="Template — Lembrete de Vencimento">
-            <textarea value={form.whatsappTemplate} onChange={e => setForm(f => ({ ...f, whatsappTemplate: e.target.value }))} rows={3}
-              className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-sm text-text-main outline-none focus:border-accent/50 resize-none" />
+            <textarea value={form.whatsappTemplate} onChange={e => setForm(f => ({ ...f, whatsappTemplate: e.target.value }))} rows={3} className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-sm text-text-main outline-none focus:border-accent/50 resize-none" />
           </Field>
           <Field label="Template — Cobrança de Atraso">
-            <textarea value={form.whatsappOverdueTemplate} onChange={e => setForm(f => ({ ...f, whatsappOverdueTemplate: e.target.value }))} rows={3}
-              className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-sm text-text-main outline-none focus:border-accent/50 resize-none" />
+            <textarea value={form.whatsappOverdueTemplate} onChange={e => setForm(f => ({ ...f, whatsappOverdueTemplate: e.target.value }))} rows={3} className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-sm text-text-main outline-none focus:border-accent/50 resize-none" />
           </Field>
         </div>
       </div>
@@ -1361,18 +1477,29 @@ const SettingsView = ({ onRefresh }: { onRefresh: () => void }) => {
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
+  const [dueDateFilter, setDueDateFilter] = useState<'all' | 'pending' | 'overdue' | 'paid'>('all');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [tick, setTick] = useState(0);
-  // undefined = ainda carregando, null = deslogado, object = logado
   const [user, setUser] = useState<any>(undefined);
 
   useEffect(() => {
-    const unsubAuth = onAuthStateChanged(auth, u => setUser(u ?? null));
+    const unsubAuth = onAuthStateChanged(auth, u => {
+      setUser(u ?? null);
+      dataService.setUser(u?.uid ?? null);
+    });
     const unsubData = dataService.subscribe(() => setTick(p => p + 1));
     return () => { unsubAuth(); unsubData(); };
   }, []);
 
   const refresh = useCallback(() => setTick(p => p + 1), []);
+
+  const navigate = useCallback((tab: string, filter?: string) => {
+    setActiveTab(tab);
+    if (tab === 'due-dates' && filter) {
+      setDueDateFilter(filter as any);
+    }
+    setIsSidebarOpen(false);
+  }, []);
 
   const stats = useMemo(() => dataService.getStats(), [tick]);
   const clients = useMemo(() => dataService.getClients(), [tick]);
@@ -1385,7 +1512,7 @@ export default function App() {
   };
   const handleLogout = () => signOut(auth);
 
-  // Aguardando Firebase resolver a sessão
+  // ── Loading screen ──
   if (user === undefined) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-bg">
@@ -1397,34 +1524,9 @@ export default function App() {
     );
   }
 
-  // Usuário não autenticado — exibe tela de login
+  // ── Auth screen ──
   if (user === null) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-bg">
-        <div className="bg-card border border-border rounded-2xl p-10 flex flex-col items-center gap-6 shadow-2xl w-full max-w-sm">
-          <div className="w-12 h-12 bg-accent rounded-xl flex items-center justify-center shadow-lg shadow-accent/20">
-            <CreditCard size={24} className="text-bg" />
-          </div>
-          <div className="text-center">
-            <h1 className="text-2xl font-black tracking-tighter text-text-main italic">NIKLAUS GESTOR</h1>
-            <p className="text-text-dim text-sm mt-1">Sistema de Gestão de Empréstimos</p>
-          </div>
-          <button
-            onClick={handleLogin}
-            className="w-full flex items-center justify-center gap-3 bg-white text-gray-800 font-semibold px-6 py-3 rounded-xl hover:bg-gray-100 transition-all shadow-md text-sm"
-          >
-            <svg width="18" height="18" viewBox="0 0 48 48">
-              <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
-              <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
-              <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
-              <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.31-8.16 2.31-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
-            </svg>
-            Entrar com Google
-          </button>
-          <p className="text-text-dim text-xs text-center opacity-60">Acesso restrito a usuários autorizados</p>
-        </div>
-      </div>
-    );
+    return <AuthScreen onGoogleLogin={handleLogin} />;
   }
 
   const navItems = [
@@ -1484,10 +1586,8 @@ export default function App() {
         </div>
       </aside>
 
-      {/* Overlay mobile */}
       {isSidebarOpen && <div className="fixed inset-0 z-40 bg-black/40 lg:hidden" onClick={() => setIsSidebarOpen(false)} />}
 
-      {/* Main */}
       <main className="flex-1 flex flex-col h-screen overflow-hidden text-text-main font-sans">
         <header className="bg-bg/80 backdrop-blur-md border-b border-border px-6 h-12 flex items-center justify-between sticky top-0 z-40">
           <div className="flex items-center gap-4">
@@ -1509,9 +1609,9 @@ export default function App() {
             {user ? (
               <div className="flex items-center gap-2">
                 <div className="w-6 h-6 rounded bg-accent/20 border border-accent/30 flex items-center justify-center text-[10px] font-bold text-accent overflow-hidden">
-                  {user.photoURL ? <img src={user.photoURL} alt="" referrerPolicy="no-referrer" /> : user.displayName?.charAt(0) ?? 'U'}
+                  {user.photoURL ? <img src={user.photoURL} alt="" referrerPolicy="no-referrer" /> : (user.displayName?.charAt(0) ?? user.email?.charAt(0) ?? 'U')}
                 </div>
-                <span className="text-xs font-medium text-text-dim hidden md:block">{user.displayName ?? 'Usuário'}</span>
+                <span className="text-xs font-medium text-text-dim hidden md:block">{user.displayName ?? user.email ?? 'Usuário'}</span>
               </div>
             ) : (
               <button onClick={handleLogin} className="text-xs font-bold text-accent hover:text-accent/80 transition-colors">Conectar</button>
@@ -1539,12 +1639,12 @@ export default function App() {
                 )}
               </header>
 
-              {activeTab === 'dashboard' && <DashboardView stats={stats} revenueData={revenueData} />}
+              {activeTab === 'dashboard' && <DashboardView stats={stats} revenueData={revenueData} onNavigate={navigate} />}
               {activeTab === 'clients' && <ClientsView clients={clients} contracts={contracts} onRefresh={refresh} />}
-              {activeTab === 'contracts' && <ContractsView contracts={contracts} clients={clients} installments={installments} onRefresh={refresh} />}
-              {activeTab === 'due-dates' && <DueDatesView onRefresh={refresh} />}
-              {activeTab === 'analysis' && <AnalysisView revenueData={revenueData} stats={stats} />}
-              {activeTab === 'reports' && <ReportsView clients={clients} contracts={contracts} />}
+              {activeTab === 'contracts' && <ContractsView contracts={contracts} clients={clients} installments={installments} onRefresh={refresh} onNavigate={navigate} />}
+              {activeTab === 'due-dates' && <DueDatesView onRefresh={refresh} initialFilter={dueDateFilter} />}
+              {activeTab === 'analysis' && <AnalysisView revenueData={revenueData} stats={stats} onNavigate={navigate} />}
+              {activeTab === 'reports' && <ReportsView clients={clients} contracts={contracts} onNavigate={navigate} />}
               {activeTab === 'whatsapp' && <WhatsAppView />}
               {activeTab === 'notifications' && <NotificationsView />}
               {activeTab === 'sublogins' && <SubLoginsView onRefresh={refresh} />}
@@ -1553,6 +1653,170 @@ export default function App() {
           </AnimatePresence>
         </div>
       </main>
+    </div>
+  );
+}
+
+// ─── AuthScreen ───────────────────────────────────────────────────────────────
+
+function AuthScreen({ onGoogleLogin }: { onGoogleLogin: () => void }) {
+  type AuthMode = 'login' | 'register' | 'forgot';
+  const [mode, setMode] = useState<AuthMode>('login');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const reset = (m: AuthMode) => {
+    setMode(m); setError(''); setSuccess(''); setPassword(''); setConfirmPassword('');
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(''); setSuccess(''); setLoading(true);
+    try {
+      if (mode === 'login') {
+        await signInWithEmailAndPassword(auth, email, password);
+      } else if (mode === 'register') {
+        if (password !== confirmPassword) { setError('As senhas não coincidem.'); setLoading(false); return; }
+        if (password.length < 6) { setError('A senha deve ter pelo menos 6 caracteres.'); setLoading(false); return; }
+        await createUserWithEmailAndPassword(auth, email, password);
+      } else if (mode === 'forgot') {
+        await sendPasswordResetEmail(auth, email);
+        setSuccess('E-mail de redefinição enviado! Verifique sua caixa de entrada.');
+      }
+    } catch (err: any) {
+      setError(authErrorMsg(err.code));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const modeConfig = {
+    login: { title: 'Entrar', btn: 'Acessar Sistema', subtitle: 'Bem-vindo de volta' },
+    register: { title: 'Cadastrar', btn: 'Criar Conta', subtitle: 'Crie sua conta gratuita' },
+    forgot: { title: 'Redefinir Senha', btn: 'Enviar E-mail', subtitle: 'Recupere seu acesso' },
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-bg px-4">
+      <div className="bg-card border border-border rounded-2xl p-8 flex flex-col gap-6 shadow-2xl w-full max-w-sm">
+        {/* Logo */}
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-12 h-12 bg-accent rounded-xl flex items-center justify-center shadow-lg shadow-accent/20">
+            <CreditCard size={24} className="text-bg" />
+          </div>
+          <div className="text-center">
+            <h1 className="text-2xl font-black tracking-tighter text-text-main italic">NIKLAUS GESTOR</h1>
+            <p className="text-text-dim text-xs mt-0.5">{modeConfig[mode].subtitle}</p>
+          </div>
+        </div>
+
+        {/* Tab Switcher */}
+        <div className="flex gap-1 bg-bg border border-border rounded-lg p-1 text-xs">
+          {(['login', 'register', 'forgot'] as AuthMode[]).map(m => (
+            <button key={m} onClick={() => reset(m)} className={`flex-1 py-1.5 rounded font-semibold transition-colors ${mode === m ? 'bg-accent text-bg' : 'text-text-dim hover:text-text-main'}`}>
+              {m === 'login' ? 'Entrar' : m === 'register' ? 'Cadastrar' : 'Recuperar'}
+            </button>
+          ))}
+        </div>
+
+        {/* Form */}
+        <form onSubmit={handleSubmit} className="space-y-3">
+          <div>
+            <label className="block text-[10px] font-bold text-text-dim uppercase tracking-wider mb-1.5">E-mail</label>
+            <div className="relative">
+              <Mail size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-dim" />
+              <input
+                type="email" required value={email} onChange={e => setEmail(e.target.value)}
+                placeholder="seu@email.com"
+                className="w-full bg-bg border border-border rounded-lg pl-9 pr-3 py-2.5 text-sm text-text-main outline-none focus:border-accent/50 transition-colors placeholder:text-text-dim/40"
+              />
+            </div>
+          </div>
+
+          {mode !== 'forgot' && (
+            <div>
+              <label className="block text-[10px] font-bold text-text-dim uppercase tracking-wider mb-1.5">Senha</label>
+              <div className="relative">
+                <Lock size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-dim" />
+                <input
+                  type={showPassword ? 'text' : 'password'} required value={password} onChange={e => setPassword(e.target.value)}
+                  placeholder="••••••••" minLength={6}
+                  className="w-full bg-bg border border-border rounded-lg pl-9 pr-10 py-2.5 text-sm text-text-main outline-none focus:border-accent/50 transition-colors placeholder:text-text-dim/40"
+                />
+                <button type="button" onClick={() => setShowPassword(v => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 text-text-dim hover:text-text-main transition-colors">
+                  {showPassword ? <EyeOff size={14} /> : <Eye size={14} />}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {mode === 'register' && (
+            <div>
+              <label className="block text-[10px] font-bold text-text-dim uppercase tracking-wider mb-1.5">Confirmar Senha</label>
+              <div className="relative">
+                <Lock size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-dim" />
+                <input
+                  type={showPassword ? 'text' : 'password'} required value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)}
+                  placeholder="••••••••" minLength={6}
+                  className="w-full bg-bg border border-border rounded-lg pl-9 pr-3 py-2.5 text-sm text-text-main outline-none focus:border-accent/50 transition-colors placeholder:text-text-dim/40"
+                />
+              </div>
+            </div>
+          )}
+
+          {error && (
+            <div className="bg-danger/10 border border-danger/30 rounded-lg px-3 py-2 text-xs text-danger flex items-center gap-2">
+              <AlertCircle size={12} className="shrink-0" /> {error}
+            </div>
+          )}
+
+          {success && (
+            <div className="bg-accent/10 border border-accent/30 rounded-lg px-3 py-2 text-xs text-accent flex items-center gap-2">
+              <CheckCircle2 size={12} className="shrink-0" /> {success}
+            </div>
+          )}
+
+          <button type="submit" disabled={loading}
+            className="w-full flex items-center justify-center gap-2 bg-accent text-bg font-bold py-2.5 rounded-lg hover:brightness-110 transition-all disabled:opacity-60 disabled:cursor-not-allowed text-sm">
+            {loading ? <div className="w-4 h-4 border-2 border-bg border-t-transparent rounded-full animate-spin" /> : <UserCheck size={15} />}
+            {loading ? 'Aguarde...' : modeConfig[mode].btn}
+          </button>
+        </form>
+
+        {mode !== 'forgot' && (
+          <>
+            <div className="flex items-center gap-3">
+              <div className="flex-1 h-px bg-border" />
+              <span className="text-[11px] text-text-dim">ou</span>
+              <div className="flex-1 h-px bg-border" />
+            </div>
+
+            <button onClick={onGoogleLogin}
+              className="w-full flex items-center justify-center gap-3 bg-white text-gray-800 font-semibold px-6 py-2.5 rounded-xl hover:bg-gray-100 transition-all shadow-md text-sm">
+              <svg width="18" height="18" viewBox="0 0 48 48">
+                <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+                <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+                <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+                <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.31-8.16 2.31-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+              </svg>
+              Entrar com Google
+            </button>
+          </>
+        )}
+
+        {mode === 'forgot' && (
+          <button onClick={() => reset('login')} className="flex items-center justify-center gap-2 text-xs text-text-dim hover:text-text-main transition-colors">
+            <ArrowLeft size={12} /> Voltar para o login
+          </button>
+        )}
+
+        <p className="text-text-dim text-[10px] text-center opacity-50">Cada conta possui seus próprios registros e dados isolados</p>
+      </div>
     </div>
   );
 }
