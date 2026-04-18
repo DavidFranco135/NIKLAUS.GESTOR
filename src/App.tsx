@@ -1045,6 +1045,14 @@ const ContractsView = ({ contracts, clients, installments, onRefresh, onNavigate
                     </div>
                     <div className="text-xs text-text-dim mt-0.5">
                       {c.description} · {c.installmentsCount}x R$ {fmt(c.totalAmount / c.installmentsCount)}
+                      {(c.lateInterestRate ?? 0) > 0 && (
+                        <span className="ml-1 text-warning">
+                          · {c.lateInterestRate}%/dia
+                          {totalInterestOnContract > 0
+                            ? ` · juros: R$ ${fmt(totalInterestOnContract)}`
+                            : ' · sem atraso'}
+                        </span>
+                      )}
                       {/* Mostra juros acumulados se houver atraso */}
                       {totalInterestOnContract > 0 && (
                         <span className="ml-2 text-danger">· +R$ {fmt(totalInterestOnContract)} juros</span>
