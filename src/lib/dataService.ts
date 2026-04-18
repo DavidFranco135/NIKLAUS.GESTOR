@@ -415,6 +415,124 @@ class DataService {
     }
   }
 
+  // ─── Acrescentar valor ao contrato (novo empréstimo na mesma conta) ───────────
+
+  async addAmountToContract(
+    contractId: string,
+    additionalAmount: number,
+    installmentsCount: number,
+    firstPaymentDate: string,
+  ) {
+    const contract = this.contracts.find(c => c.id === contractId);
+    if (!contract) return;
+
+    const billingType = contract.billingType ?? 'monthly';
+    const skip = contract.skipNonBusinessDays ?? false;
+    const baseDate = new Date(firstPaymentDate + 'T00:00:00');
+    const amounts = this.buildInstallmentAmounts(additionalAmount, installmentsCount);
+
+    // Número da próxima parcela (continua sequência existente)
+    const existingCount = this.installments.filter(i => i.contractId === contractId).length;
+
+    // Atualiza o totalAmount do contrato
+    const newTotal = parseFloat((contract.totalAmount + additionalAmount).toFixed(2));
+    const newCount = contract.installmentsCount + installmentsCount;
+    await this.updateContract(contractId, {} as any); // força notify
+    this.contracts = this.contracts.map(c =>
+      c.id === contractId
+        ? { ...c, totalAmount: newTotal, installmentsCount: newCount, status: 'active' }
+        : c,
+    );
+    this.notify();
+
+    const user = await this.getCurrentUser();
+    if (user) {
+      try {
+        await updateDoc(doc(db, 'users', user.uid, 'contracts', contractId), {
+          totalAmount: newTotal,
+          installmentsCount: newCount,
+          status: 'active',
+        });
+        const batch = writeBatch(db);
+        for (let i = 0; i < installmentsCount; i++) {
+          const iRef = doc(collection(db, 'users', user.uid, 'installments'));
+          batch.set(iRef, {
+            contractId,
+            number: existingCount + i + 1,
+            amount: amounts[i],
+            dueDate: this.getDueDate(baseDate, i, billingType, skip),
+            status: 'pending',
+          });
+        }
+        await batch.commit();
+      } catch (e) {
+        console.error('[addAmountToContract]', e);
+        // Fallback local
+        for (let i = 0; i < installmentsCount; i++) {
+          this.installments.push({
+            id: `i-${Date.now()}-${i}`,
+            contractId,
+            number: existingCount + i + 1,
+            amount: amounts[i],
+            dueDate: this.getDueDate(baseDate, i, billingType, skip),
+            status: 'pending',
+          });
+        }
+        this.notify();
+      }
+    } else {
+      for (let i = 0; i < installmentsCount; i++) {
+        this.installments.push({
+          id: `i-${Date.now()}-${i}`,
+          contractId,
+          number: existingCount + i + 1,
+          amount: amounts[i],
+          dueDate: this.getDueDate(baseDate, i, billingType, skip),
+          status: 'pending',
+        });
+      }
+      this.notify();
+    }
+  }
+
+  // ─── Pagar apenas os juros (reseta o atraso, mantém principal pendente) ───────
+
+  async markInstallmentInterestOnly(id: string) {
+    const inst = this.installments.find(i => i.id === id);
+    const contract = inst ? this.contracts.find(c => c.id === inst.contractId) : undefined;
+    if (!inst || !contract) return;
+
+    // Calcula o juro acumulado até agora
+    const dueDate = new Date(inst.dueDate + 'T00:00:00');
+    const daysLate = Math.max(0, differenceInDays(new Date(), dueDate));
+    const interestPaid = this.calculateInterest(
+      inst.amount, daysLate, contract.lateInterestRate, contract.interestType ?? 'compound',
+    );
+
+    // Reseta a data de vencimento para hoje (zera o atraso) e mantém pendente
+    const newDueDate = format(new Date(), 'yyyy-MM-dd');
+    const paidAt = new Date().toISOString();
+
+    this.installments = this.installments.map(i =>
+      i.id === id
+        ? { ...i, dueDate: newDueDate, interestPaid: (i.interestPaid ?? 0) + interestPaid }
+        : i,
+    );
+    this.notify();
+
+    const user = await this.getCurrentUser();
+    if (user) {
+      try {
+        await updateDoc(doc(db, 'users', user.uid, 'installments', id), {
+          dueDate: newDueDate,
+          interestPaid: (inst.interestPaid ?? 0) + interestPaid,
+        });
+      } catch (e) { console.error('[markInterestOnly]', e); }
+    }
+
+    return interestPaid;
+  }
+
   // ─── Client CRUD ─────────────────────────────────────────────────────────────
 
   async addClient(client: Omit<Client, 'id'>) {
