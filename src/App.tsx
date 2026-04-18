@@ -875,9 +875,168 @@ const ProjectedInterestPanel = ({ stats }: { stats: any }) => {
   );
 };
 
+// ─── ContractProjectionPanel ─────────────────────────────────────────────────
+// Painel interativo de juros projetados por período para um contrato específico
+
+const CONTRACT_PERIODS = [
+  { key: 'p1',   label: '1 Dia',    days: 1   },
+  { key: 'p7',   label: '1 Semana', days: 7   },
+  { key: 'p30',  label: '1 Mês',    days: 30  },
+  { key: 'p90',  label: '3 Meses',  days: 90  },
+  { key: 'p180', label: '6 Meses',  days: 180 },
+  { key: 'p365', label: '1 Ano',    days: 365 },
+] as const;
+
+const ContractProjectionPanel = ({ contract, insts }: { contract: Contract; insts: EnrichedInstallment[] }) => {
+  const [selectedKey, setSelectedKey] = useState<string>('p30');
+  const rate = contract.lateInterestRate ?? 0;
+  const type = contract.interestType ?? 'compound';
+
+  const pendingPrincipal = insts
+    .filter(i => i.status === 'pending')
+    .reduce((s, i) => s + i.amount, 0);
+
+  const overdueNow = insts
+    .filter(i => i.status === 'overdue')
+    .reduce((s, i) => s + i.computedInterest, 0);
+
+  const calc = (days: number): number => {
+    if (pendingPrincipal <= 0 || rate <= 0) return 0;
+    const r = rate / 100;
+    const v = type === 'simple'
+      ? pendingPrincipal * r * days
+      : pendingPrincipal * (Math.pow(1 + r, days) - 1);
+    return parseFloat(v.toFixed(2));
+  };
+
+  if (rate <= 0) return (
+    <div className="text-[10px] text-text-dim px-3 py-2 rounded-lg bg-sidebar border border-border">
+      💡 Sem juros por atraso configurados neste contrato.
+    </div>
+  );
+
+  const selectedPeriod = CONTRACT_PERIODS.find(p => p.key === selectedKey)!;
+  const selectedValue = calc(selectedPeriod.days);
+  const maxVal = Math.max(...CONTRACT_PERIODS.map(p => calc(p.days)), 0.01);
+
+  return (
+    <div className="rounded-xl overflow-hidden border border-warning/30">
+      {/* Header */}
+      <div className="px-4 py-3 bg-warning/5 border-b border-warning/20 flex items-start justify-between flex-wrap gap-2">
+        <div>
+          <p className="text-[11px] font-bold text-warning uppercase tracking-wider">
+            Juros Projetados por Período
+          </p>
+          <p className="text-[10px] text-text-dim mt-0.5">
+            Taxa: <span className="text-warning font-mono">{rate}%/dia ({type === 'simple' ? 'Simples' : 'Composto'})</span>
+            {' · '}Principal pendente: <span className="font-mono text-text-main">R$ {fmt(pendingPrincipal)}</span>
+          </p>
+        </div>
+        {overdueNow > 0 && (
+          <span className="px-2 py-1 rounded bg-danger/10 text-danger text-[10px] border border-danger/20 font-bold shrink-0">
+            Em atraso agora: R$ {fmt(overdueNow)}
+          </span>
+        )}
+      </div>
+
+      {pendingPrincipal <= 0 ? (
+        <p className="px-4 py-3 text-[11px] text-text-dim italic bg-bg">
+          Sem parcelas pendentes — projeção indisponível.
+        </p>
+      ) : (
+        <div className="bg-bg p-4 space-y-4">
+          {/* Seletor de abas */}
+          <div className="flex flex-wrap gap-1.5">
+            {CONTRACT_PERIODS.map(p => (
+              <button
+                key={p.key}
+                onClick={() => setSelectedKey(p.key)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all ${
+                  selectedKey === p.key
+                    ? 'bg-warning text-bg border-warning'
+                    : 'bg-bg border-border text-text-dim hover:border-warning/40 hover:text-warning'
+                }`}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Valor em destaque do período selecionado */}
+          <div className="bg-warning/5 border border-warning/20 rounded-xl p-4 flex items-center justify-between">
+            <div>
+              <p className="text-[11px] text-warning/70 uppercase tracking-wider font-bold mb-1">
+                Se atrasar {selectedPeriod.label.toLowerCase()}
+              </p>
+              <p className="text-3xl font-black font-mono text-warning">
+                R$ {fmt(selectedValue)}
+              </p>
+              <p className="text-[10px] text-text-dim mt-1">
+                Principal + juros: R$ {fmt(pendingPrincipal + selectedValue)}
+              </p>
+            </div>
+            <div className="text-5xl opacity-10 font-black text-warning select-none">%</div>
+          </div>
+
+          {/* Tabela comparativa — todos os períodos */}
+          <div className="border border-border rounded-lg overflow-hidden">
+            <div className="px-4 py-2 bg-sidebar border-b border-border">
+              <p className="text-[10px] font-bold text-text-dim uppercase tracking-wider">Comparativo — todos os períodos</p>
+            </div>
+            <div className="divide-y divide-border/30">
+              {CONTRACT_PERIODS.map(p => {
+                const val = calc(p.days);
+                const total = pendingPrincipal + val;
+                const pct = pendingPrincipal > 0 ? (val / pendingPrincipal) * 100 : 0;
+                const barPct = maxVal > 0 ? (val / maxVal) * 100 : 0;
+                const isSel = p.key === selectedKey;
+                return (
+                  <button
+                    key={p.key}
+                    onClick={() => setSelectedKey(p.key)}
+                    className={`w-full flex items-center gap-3 px-4 py-2.5 transition-colors text-left ${isSel ? 'bg-warning/10' : 'hover:bg-white/[0.02]'}`}
+                  >
+                    <span className={`text-xs font-semibold w-16 shrink-0 ${isSel ? 'text-warning' : 'text-text-dim'}`}>
+                      {p.label}
+                    </span>
+                    <div className="flex-1 h-1.5 bg-border rounded-full overflow-hidden hidden sm:block">
+                      <div
+                        className="h-full bg-warning rounded-full transition-all"
+                        style={{ width: `${Math.min(100, barPct)}%` }}
+                      />
+                    </div>
+                    <div className="text-right shrink-0">
+                      <span className={`text-sm font-bold font-mono ${isSel ? 'text-warning' : 'text-text-main'}`}>
+                        +R$ {fmt(val)}
+                      </span>
+                      <span className="text-[10px] text-text-dim ml-2 hidden sm:inline">
+                        → R$ {fmt(total)} ({pct.toFixed(1)}%)
+                      </span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+            {/* Total pior cenário */}
+            <div className="px-4 py-3 bg-danger/5 border-t border-danger/20 flex justify-between items-center">
+              <span className="text-[11px] font-bold text-danger uppercase tracking-wider">
+                Atraso atual + projeção 1 ano
+              </span>
+              <span className="text-sm font-black font-mono text-danger">
+                R$ {fmt(overdueNow + calc(365))}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
 // ─── ContractEditForm ────────────────────────────────────────────────────────
 
 const ContractEditForm = ({ contract, clients, onSave, onClose }: { contract: Contract; clients: Client[]; onSave: (d: any) => void; onClose: () => void }) => {
+  const today = format(new Date(), 'yyyy-MM-dd');
   const [form, setForm] = useState({
     clientId: contract.clientId,
     description: contract.description,
@@ -886,10 +1045,22 @@ const ContractEditForm = ({ contract, clients, onSave, onClose }: { contract: Co
     interestType: (contract.interestType ?? 'compound') as 'compound' | 'simple',
   });
 
+  // Seção de valor adicional
+  const [addExtra, setAddExtra] = useState(false);
+  const [extra, setExtra] = useState({
+    amount: '',
+    installmentsCount: '1',
+    firstPaymentDate: today,
+  });
+
+  const extraAmount = parseFloat(extra.amount) || 0;
+  const extraCount = parseInt(extra.installmentsCount) || 1;
+  const extraInstallAmt = extraAmount > 0 ? extraAmount / extraCount : 0;
+
   return (
-    <form className="space-y-4" onSubmit={e => { e.preventDefault(); onSave(form); }}>
+    <form className="space-y-4" onSubmit={e => { e.preventDefault(); onSave({ ...form, extra: addExtra && extraAmount > 0 ? extra : null }); }}>
       <div className="bg-warning/5 border border-warning/20 rounded-lg px-3 py-2 text-[11px] text-warning">
-        ⚠ Edição de contrato altera apenas os campos abaixo. Parcelas já geradas não são recalculadas.
+        ⚠ Edição altera apenas os campos abaixo. Parcelas já geradas não são recalculadas.
       </div>
 
       <Field label="Cliente">
@@ -933,6 +1104,64 @@ const ContractEditForm = ({ contract, clients, onSave, onClose }: { contract: Co
         </div>
       </div>
 
+      {/* ── Acrescentar valor ao empréstimo ── */}
+      <div className="border border-border rounded-xl overflow-hidden">
+        <button
+          type="button"
+          onClick={() => setAddExtra(v => !v)}
+          className={`w-full flex items-center justify-between px-4 py-3 text-sm font-semibold transition-colors ${addExtra ? 'bg-accent text-bg' : 'bg-sidebar text-text-main hover:bg-white/[0.03]'}`}
+        >
+          <span className="flex items-center gap-2">
+            <Plus size={15} /> Acrescentar Valor ao Empréstimo
+          </span>
+          <span className="text-[11px] font-normal opacity-70">
+            {addExtra ? 'clique para cancelar' : 'cliente quer pegar mais?'}
+          </span>
+        </button>
+
+        {addExtra && (
+          <div className="p-4 space-y-3 bg-bg">
+            <div className="bg-accent/5 border border-accent/20 rounded-lg px-3 py-2 text-[11px] text-accent">
+              Novas parcelas serão criadas e somadas ao contrato existente. As parcelas já pagas não são alteradas.
+            </div>
+
+            <Field label="Valor Adicional (R$) *">
+              <Input
+                type="number" min="0.01" step="0.01"
+                value={extra.amount}
+                onChange={e => setExtra(f => ({ ...f, amount: e.target.value }))}
+                placeholder="Ex: 500,00"
+              />
+            </Field>
+
+            <Field label="Número de Parcelas *">
+              <Input
+                type="number" min="1" max="360"
+                value={extra.installmentsCount}
+                onChange={e => setExtra(f => ({ ...f, installmentsCount: e.target.value }))}
+              />
+            </Field>
+
+            <Field label="Data do 1º Pagamento Adicional *">
+              <Input
+                type="date"
+                value={extra.firstPaymentDate}
+                onChange={e => setExtra(f => ({ ...f, firstPaymentDate: e.target.value }))}
+              />
+            </Field>
+
+            {extraAmount > 0 && (
+              <div className="bg-accent/5 border border-accent/20 rounded-lg p-3 text-xs text-text-dim">
+                <span className="text-accent font-bold">{extraCount}x</span> de{' '}
+                <span className="text-text-main font-bold">R$ {fmt(extraInstallAmt)}</span>
+                {' '}· Total adicional:{' '}
+                <span className="text-accent font-bold">R$ {fmt(extraAmount)}</span>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
       <div className="flex gap-3 pt-2">
         <Btn type="submit">Salvar Alterações</Btn>
         <Btn type="button" variant="ghost" onClick={onClose}>Cancelar</Btn>
@@ -966,6 +1195,15 @@ const ContractsView = ({ contracts, clients, installments, onRefresh, onNavigate
       lateInterestRate: parseFloat(data.lateInterestRate) || 0,
       interestType: data.interestType,
     });
+    // Acrescentar valor adicional se informado
+    if (data.extra && parseFloat(data.extra.amount) > 0) {
+      await dataService.addAmountToContract(
+        editingContract.id,
+        parseFloat(data.extra.amount),
+        parseInt(data.extra.installmentsCount) || 1,
+        data.extra.firstPaymentDate,
+      );
+    }
     setEditingContract(null);
     onRefresh();
   };
@@ -1173,7 +1411,24 @@ const ContractsView = ({ contracts, clients, installments, onRefresh, onNavigate
                             <div className="flex flex-col gap-1">
                               {statusBadge(inst.status)}
                               {inst.status !== 'paid'
-                                ? <button onClick={() => { dataService.markInstallmentPaid(inst.id); onRefresh(); }} className="px-2 py-0.5 rounded bg-accent/10 text-accent text-[10px] hover:bg-accent/20 w-fit">✓ Pago</button>
+                                ? <div className="flex flex-col gap-1">
+                                    <button onClick={() => { dataService.markInstallmentPaid(inst.id); onRefresh(); }} className="px-2 py-0.5 rounded bg-accent/10 text-accent text-[10px] hover:bg-accent/20 w-fit">✓ Pago</button>
+                                    {inst.status === 'overdue' && inst.computedInterest > 0 && (
+                                      <button
+                                        onClick={async () => {
+                                          const paid = await dataService.markInstallmentInterestOnly(inst.id);
+                                          if (paid !== undefined) {
+                                            alert(`✓ Juros de R$ ${paid.toLocaleString('pt-BR', { minimumFractionDigits: 2 })} registrados. Parcela continua pendente com atraso zerado.`);
+                                          }
+                                          onRefresh();
+                                        }}
+                                        className="px-2 py-0.5 rounded bg-warning/10 text-warning text-[10px] hover:bg-warning/20 border border-warning/20 w-fit whitespace-nowrap"
+                                        title="Registra o pagamento apenas dos juros e zera o atraso. O principal continua pendente."
+                                      >
+                                        $ Só Juros
+                                      </button>
+                                    )}
+                                  </div>
                                 : <button onClick={() => { dataService.markInstallmentPending(inst.id); onRefresh(); }} className="px-2 py-0.5 rounded bg-sidebar border border-border text-text-dim text-[10px] hover:bg-white/5 w-fit">Desfazer</button>
                               }
                             </div>
@@ -1182,29 +1437,8 @@ const ContractsView = ({ contracts, clients, installments, onRefresh, onNavigate
                       </div>
                     </div>
 
-                    {/* ── JUROS POR ATRASO (resumo) ── */}
-                    {(c.lateInterestRate ?? 0) > 0 && (
-                      <div className="flex gap-3 flex-wrap text-[10px]">
-                        <span className="px-2 py-1 rounded bg-warning/10 text-warning border border-warning/20">
-                          {c.lateInterestRate}%/dia · {c.interestType === 'simple' ? 'Juros Simples' : 'Juros Compostos'}
-                        </span>
-                        {totalInterestOnContract > 0 && (
-                          <span className="px-2 py-1 rounded bg-danger/10 text-danger border border-danger/20">
-                            Juros acumulados: R$ {fmt(totalInterestOnContract)}
-                          </span>
-                        )}
-                        {totalInterestOnContract === 0 && (
-                          <span className="px-2 py-1 rounded bg-sidebar text-text-dim border border-border">
-                            Sem atraso — juros zerados
-                          </span>
-                        )}
-                      </div>
-                    )}
-                    {(c.lateInterestRate ?? 0) === 0 && (
-                      <div className="text-[10px] text-text-dim px-3 py-2 rounded-lg bg-sidebar border border-border">
-                        💡 Sem juros por atraso — clique em Editar para configurar
-                      </div>
-                    )}
+                    {/* ── JUROS PROJETADOS POR PERÍODO ── */}
+                    <ContractProjectionPanel contract={c} insts={insts} />
                   </div>
                 )}
               </div>
