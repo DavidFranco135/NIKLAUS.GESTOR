@@ -1,4 +1,4 @@
-import { format, addMonths, differenceInDays } from 'date-fns';
+import { format, addMonths, addDays, isWeekend, differenceInDays } from 'date-fns';
 import {
   collection,
   addDoc,
@@ -44,6 +44,7 @@ export interface Installment {
   status: PaymentStatus;
   paidAt?: string;
   interest?: number;
+  interestPaid?: number; // juros efetivamente cobrado no momento do pagamento
 }
 
 export interface EnrichedInstallment extends Installment {
@@ -66,6 +67,13 @@ export interface Contract {
   startDate: string;
   status: 'active' | 'completed' | 'cancelled';
   lateInterestRate: number;
+  // Tipo de cobrança — define o intervalo entre parcelas
+  billingType?: 'monthly' | 'biweekly' | 'weekly' | 'daily';
+  // Tipo de juros por atraso
+  interestType?: 'compound' | 'simple';
+  // Pular finais de semana nos vencimentos
+  skipNonBusinessDays?: boolean;
+  interestOnValueRate?: number; // Juros sobre o valor (aplicado na criação)
 }
 
 export interface Client {
@@ -205,20 +213,97 @@ class DataService {
     });
   }
 
-  // ─── Compound Interest ───────────────────────────────────────────────────────
+  // ─── Cálculo de Data de Vencimento ───────────────────────────────────────────
 
-  calculateCompoundInterest(
+  /**
+   * Calcula a data de vencimento correta pelo calendário:
+   * - Mensal   → mesmo dia do mês seguinte (addMonths — respeita meses curtos)
+   * - Quinzenal → a cada 15 dias corridos
+   * - Semanal  → a cada 7 dias corridos
+   * - Diária   → a cada 1 dia corrido
+   * - skipNonBusinessDays → avança para a próxima segunda se cair em fim de semana
+   */
+  getDueDate(base: Date, index: number, billingType: string, skip: boolean): string {
+    let date: Date;
+    switch (billingType) {
+      case 'daily':
+        date = addDays(base, index);
+        break;
+      case 'weekly':
+        date = addDays(base, index * 7);
+        break;
+      case 'biweekly':
+        // Quinzenal = a cada 15 dias (padrão brasileiro)
+        date = addDays(base, index * 15);
+        break;
+      case 'monthly':
+      default:
+        // addMonths respeita meses curtos (ex: 31/jan → 28/fev)
+        date = addMonths(base, index);
+        break;
+    }
+
+    if (skip) {
+      // Pular fins de semana → avança para segunda-feira
+      while (isWeekend(date)) {
+        date = addDays(date, 1);
+      }
+      // Feriados nacionais fixos brasileiros
+      const BR_HOLIDAYS: string[] = [];
+      for (let year = 2024; year <= 2035; year++) {
+        BR_HOLIDAYS.push(
+          `${year}-01-01`, // Confraternização
+          `${year}-04-21`, // Tiradentes
+          `${year}-05-01`, // Dia do Trabalho
+          `${year}-09-07`, // Independência
+          `${year}-10-12`, // N. Sra. Aparecida
+          `${year}-11-02`, // Finados
+          `${year}-11-15`, // Proclamação da República
+          `${year}-11-20`, // Consciência Negra
+          `${year}-12-25`, // Natal
+        );
+      }
+      while (BR_HOLIDAYS.includes(format(date, 'yyyy-MM-dd')) || isWeekend(date)) {
+        date = addDays(date, 1);
+      }
+    }
+
+    return format(date, 'yyyy-MM-dd');
+  }
+
+  // ─── Cálculo de Juros ────────────────────────────────────────────────────────
+
+  /**
+   * Calcula juros por atraso:
+   * - Composto: Principal × (1 + taxa/100)^dias  — padrão bancário brasileiro
+   * - Simples:  Principal × taxa/100 × dias      — mais comum em acordos informais
+   */
+  calculateInterest(
     principal: number,
     daysLate: number,
     dailyRate?: number,
+    interestType: 'compound' | 'simple' = 'compound',
   ): number {
     const settings = this.getSettings();
     const rate = dailyRate ?? settings.compoundInterestRate;
     const grace = settings.graceDays;
     const effectiveDays = Math.max(0, daysLate - grace);
     if (effectiveDays <= 0 || rate <= 0) return 0;
-    const total = principal * Math.pow(1 + rate / 100, effectiveDays);
-    return parseFloat((total - principal).toFixed(2));
+
+    let interest: number;
+    if (interestType === 'simple') {
+      // Juros simples: I = P × r × t
+      interest = principal * (rate / 100) * effectiveDays;
+    } else {
+      // Juros compostos: A = P(1+r)^t — I = A - P
+      interest = principal * Math.pow(1 + rate / 100, effectiveDays) - principal;
+    }
+    return parseFloat(interest.toFixed(2));
+  }
+
+  // Mantido para retrocompatibilidade
+  calculateCompoundInterest(principal: number, daysLate: number, dailyRate?: number): number {
+    return this.calculateInterest(principal, daysLate, dailyRate, 'compound');
   }
 
   // ─── Enriched Installments ───────────────────────────────────────────────────
@@ -233,9 +318,10 @@ class DataService {
       let computedStatus = inst.status;
       if (inst.status !== 'paid' && daysLate > 0) computedStatus = 'overdue';
       const contractRate = contract?.lateInterestRate ?? 0;
+      const interestType = contract?.interestType ?? 'compound';
       const interest =
         computedStatus === 'overdue'
-          ? this.calculateCompoundInterest(inst.amount, daysLate, contractRate || undefined)
+          ? this.calculateInterest(inst.amount, daysLate, contractRate || undefined, interestType)
           : 0;
       return {
         ...inst,
@@ -271,7 +357,7 @@ class DataService {
         this.clients = s.docs.map(d => ({ id: d.id, ...d.data() } as Client));
         this.notify();
       },
-      e => console.warn('[Firebase] clients read error:', e.message),
+      e => console.error('[Firebase] clients error — verifique as regras do Firestore:', e.code, e.message),
     );
 
     const unsub2 = onSnapshot(
@@ -280,7 +366,7 @@ class DataService {
         this.contracts = s.docs.map(d => ({ id: d.id, ...d.data() } as Contract));
         this.notify();
       },
-      e => console.warn('[Firebase] contracts read error:', e.message),
+      e => console.error('[Firebase] contracts error — verifique as regras do Firestore:', e.code, e.message),
     );
 
     const unsub3 = onSnapshot(
@@ -289,7 +375,7 @@ class DataService {
         this.installments = s.docs.map(d => ({ id: d.id, ...d.data() } as Installment));
         this.notify();
       },
-      e => console.warn('[Firebase] installments read error:', e.message),
+      e => console.error('[Firebase] installments error — verifique as regras do Firestore:', e.code, e.message),
     );
 
     this.unsubFirebase = [unsub1, unsub2, unsub3];
@@ -316,6 +402,18 @@ class DataService {
   getClients() { return this.clients; }
   getContracts() { return this.contracts; }
   getInstallments() { return this.installments; }
+
+  // ─── Contract Update ──────────────────────────────────────────────────────────
+
+  async updateContract(id: string, data: Partial<Pick<Contract, 'description' | 'status' | 'lateInterestRate' | 'interestType' | 'clientId'>>) {
+    this.contracts = this.contracts.map(c => c.id === id ? { ...c, ...data } : c);
+    this.notify();
+    const user = await this.getCurrentUser();
+    if (user) {
+      try { await updateDoc(doc(db, 'users', user.uid, 'contracts', id), data as any); }
+      catch (e) { console.error('[updateContract]', e); }
+    }
+  }
 
   // ─── Client CRUD ─────────────────────────────────────────────────────────────
 
@@ -380,9 +478,27 @@ class DataService {
 
   // ─── Contract CRUD ───────────────────────────────────────────────────────────
 
+  // ─── Geração de valores das parcelas com correção de arredondamento ──────────
+  // Evita erro de centavo: 1000 / 300 = 3,333... → 299x R$3,33 + 1x R$3,43
+  private buildInstallmentAmounts(total: number, count: number): number[] {
+    const base = parseFloat((total / count).toFixed(2));
+    const amounts: number[] = [];
+    let sum = 0;
+    for (let i = 0; i < count - 1; i++) {
+      amounts.push(base);
+      sum = parseFloat((sum + base).toFixed(2));
+    }
+    // Última parcela corrige o arredondamento para fechar o total exato
+    const last = parseFloat((total - sum).toFixed(2));
+    amounts.push(last > 0 ? last : base);
+    return amounts;
+  }
+
   async addContract(contract: Omit<Contract, 'id'>) {
-    const installmentAmount = parseFloat((contract.totalAmount / contract.installmentsCount).toFixed(2));
+    const amounts = this.buildInstallmentAmounts(contract.totalAmount, contract.installmentsCount);
     const baseDate = new Date(contract.firstPaymentDate + 'T00:00:00');
+    const billingType = contract.billingType ?? 'monthly';
+    const skip = contract.skipNonBusinessDays ?? false;
     const user = await this.getCurrentUser();
 
     if (!user) {
@@ -391,8 +507,8 @@ class DataService {
       for (let i = 0; i < contract.installmentsCount; i++) {
         this.installments.push({
           id: `i-${Date.now()}-${i}`,
-          contractId: nc.id, number: i + 1, amount: installmentAmount,
-          dueDate: format(addMonths(baseDate, i), 'yyyy-MM-dd'), status: 'pending',
+          contractId: nc.id, number: i + 1, amount: amounts[i],
+          dueDate: this.getDueDate(baseDate, i, billingType, skip), status: 'pending',
         });
       }
       this.notify();
@@ -405,8 +521,8 @@ class DataService {
       for (let i = 0; i < contract.installmentsCount; i++) {
         const iRef = doc(collection(db, 'users', user.uid, 'installments'));
         batch.set(iRef, {
-          contractId: cRef.id, number: i + 1, amount: installmentAmount,
-          dueDate: format(addMonths(baseDate, i), 'yyyy-MM-dd'), status: 'pending',
+          contractId: cRef.id, number: i + 1, amount: amounts[i],
+          dueDate: this.getDueDate(baseDate, i, billingType, skip), status: 'pending',
         });
       }
       await batch.commit();
@@ -418,8 +534,8 @@ class DataService {
       for (let i = 0; i < contract.installmentsCount; i++) {
         this.installments.push({
           id: `i-${Date.now()}-${i}`,
-          contractId: nc.id, number: i + 1, amount: installmentAmount,
-          dueDate: format(addMonths(baseDate, i), 'yyyy-MM-dd'), status: 'pending',
+          contractId: nc.id, number: i + 1, amount: amounts[i],
+          dueDate: this.getDueDate(baseDate, i, billingType, skip), status: 'pending',
         });
       }
       this.notify();
@@ -451,20 +567,37 @@ class DataService {
 
   async markInstallmentPaid(id: string) {
     const paidAt = new Date().toISOString();
+
+    // Calcula e salva o juro cobrado no momento exato do pagamento
+    const inst = this.installments.find(i => i.id === id);
+    const contract = inst ? this.contracts.find(c => c.id === inst.contractId) : undefined;
+    let interestPaid = 0;
+    if (inst && inst.status !== 'paid') {
+      const dueDate = new Date(inst.dueDate + 'T00:00:00');
+      const daysLate = Math.max(0, differenceInDays(new Date(), dueDate));
+      if (daysLate > 0 && (contract?.lateInterestRate ?? 0) > 0) {
+        interestPaid = this.calculateInterest(
+          inst.amount, daysLate,
+          contract!.lateInterestRate,
+          contract?.interestType ?? 'compound',
+        );
+      }
+    }
+
     this.installments = this.installments.map(i =>
-      i.id === id ? { ...i, status: 'paid', paidAt } : i,
+      i.id === id ? { ...i, status: 'paid', paidAt, interestPaid } : i,
     );
     this.notify();
     const user = await this.getCurrentUser();
     if (user) {
-      try { await updateDoc(doc(db, 'users', user.uid, 'installments', id), { status: 'paid', paidAt }); }
+      try { await updateDoc(doc(db, 'users', user.uid, 'installments', id), { status: 'paid', paidAt, interestPaid }); }
       catch (e) { console.error('[markPaid]', e); }
     }
-    const inst = this.installments.find(i => i.id === id);
-    if (inst) {
-      const siblings = this.installments.filter(i => i.contractId === inst.contractId);
+    const updatedInst = this.installments.find(i => i.id === id);
+    if (updatedInst) {
+      const siblings = this.installments.filter(i => i.contractId === updatedInst.contractId);
       if (siblings.every(i => i.status === 'paid')) {
-        await this.updateContractStatus(inst.contractId, 'completed');
+        await this.updateContractStatus(updatedInst.contractId, 'completed');
       }
     }
   }
@@ -491,21 +624,72 @@ class DataService {
     }
   }
 
+  // ─── Juros Projetados por período ────────────────────────────────────────────
+  // Calcula quanto de juros seria cobrado se as parcelas pendentes
+  // ficassem em atraso pelo número de dias informado.
+  getProjectedInterest(days: number): number {
+    return parseFloat(
+      this.contracts
+        .filter(c => c.status === 'active' && (c.lateInterestRate ?? 0) > 0)
+        .reduce((acc, c) => {
+          const pendingInsts = this.installments.filter(
+            i => i.contractId === c.id && i.status === 'pending',
+          );
+          const principal = pendingInsts.reduce((s, i) => s + i.amount, 0);
+          if (principal <= 0) return acc;
+          return acc + this.calculateInterest(
+            principal, days, c.lateInterestRate, c.interestType ?? 'compound',
+          );
+        }, 0)
+        .toFixed(2),
+    );
+  }
+
   // ─── Stats ───────────────────────────────────────────────────────────────────
 
   getStats() {
     const enriched = this.getEnrichedInstallments();
     const activeContracts = this.contracts.filter(c => c.status === 'active').length;
-    const totalValue = enriched.reduce((a, i) => a + i.amount, 0);
-    const received = enriched.filter(i => i.status === 'paid').reduce((a, i) => a + i.amount, 0);
+
+    // totalValue usa o valor dos contratos diretamente — evita acúmulo de erros de arredondamento
+    const totalValue = this.contracts
+      .filter(c => c.status !== 'cancelled')
+      .reduce((a, c) => a + c.totalAmount, 0);
+
+    const received     = enriched.filter(i => i.status === 'paid').reduce((a, i) => a + i.amount, 0);
     const overdueItems = enriched.filter(i => i.status === 'overdue');
-    const overdue = overdueItems.reduce((a, i) => a + i.totalDue, 0);
-    const pending = enriched.filter(i => i.status === 'pending').reduce((a, i) => a + i.amount, 0);
-    const open = pending + overdue;
-    const totalInterest = enriched.reduce((a, i) => a + i.computedInterest, 0);
+    const overdue      = overdueItems.reduce((a, i) => a + i.totalDue, 0);
+    const pending      = enriched.filter(i => i.status === 'pending').reduce((a, i) => a + i.amount, 0);
+    const open         = pending + overdue;
+
+    // Juros efetivamente cobrado nas parcelas pagas (campo interestPaid)
+    const interestReceived = this.installments
+      .filter(i => i.status === 'paid')
+      .reduce((a, i) => a + (i.interestPaid ?? 0), 0);
+
+    // Juros acumulado atual nas parcelas EM ATRASO
+    const interestPending = overdueItems.reduce((a, i) => a + i.computedInterest, 0);
+
+    // Total de juros = recebido + em atraso
+    const totalInterest = parseFloat((interestReceived + interestPending).toFixed(2));
+
+    // Projeções por período (calculadas uma única vez aqui para performance)
+    const projected = {
+      day1:   this.getProjectedInterest(1),
+      day7:   this.getProjectedInterest(7),
+      day30:  this.getProjectedInterest(30),
+      day90:  this.getProjectedInterest(90),
+      day180: this.getProjectedInterest(180),
+      day365: this.getProjectedInterest(365),
+    };
+
     return {
       activeContracts, totalValue, received, overdue, open,
-      pending, totalInterest, totalClients: this.clients.length,
+      pending, totalInterest, interestReceived, interestPending,
+      projected,
+      // compat
+      projectedInterest: projected.day30,
+      totalClients: this.clients.length,
       overdueCount: overdueItems.length,
     };
   }
@@ -520,11 +704,13 @@ class DataService {
       const s = new Date(month.getFullYear(), month.getMonth(), 1);
       const e = new Date(month.getFullYear(), month.getMonth() + 1, 0);
       const mi = this.installments.filter(i => { const d = new Date(i.dueDate); return d >= s && d <= e; });
+      const paidInsts = mi.filter(i => i.status === 'paid');
       return {
         name: format(month, 'MMM'),
-        receita: mi.filter(i => i.status === 'paid').reduce((a, c) => a + c.amount, 0),
+        receita:  paidInsts.reduce((a, c) => a + c.amount, 0),
         previsto: mi.reduce((a, c) => a + c.amount, 0),
         atrasado: mi.filter(i => i.status === 'overdue').reduce((a, c) => a + c.amount, 0),
+        juros:    paidInsts.reduce((a, c) => a + (c.interestPaid ?? 0), 0),
       };
     });
   }
