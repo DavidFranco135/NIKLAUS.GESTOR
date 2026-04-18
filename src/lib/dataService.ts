@@ -683,6 +683,88 @@ class DataService {
 
   // ─── Installment Updates ─────────────────────────────────────────────────────
 
+  /**
+   * Pagamento parcial: o cliente paga um valor menor que o total da parcela.
+   * O valor pago é registrado, o restante (saldo devedor) vira uma nova parcela
+   * com vencimento na próxima data conforme periodicidade do contrato.
+   */
+  async applyPartialPayment(installmentId: string, amountPaid: number): Promise<{ remaining: number; newDueDate: string } | null> {
+    const inst = this.installments.find(i => i.id === installmentId);
+    const contract = inst ? this.contracts.find(c => c.id === inst.contractId) : undefined;
+    if (!inst || !contract) return null;
+
+    const dueDate = new Date(inst.dueDate + 'T00:00:00');
+    const daysLate = Math.max(0, differenceInDays(new Date(), dueDate));
+    const interestNow = daysLate > 0 && (contract.lateInterestRate ?? 0) > 0
+      ? this.calculateInterest(inst.amount, daysLate, contract.lateInterestRate, contract.interestType ?? 'compound')
+      : 0;
+    const totalDue = parseFloat((inst.amount + interestNow).toFixed(2));
+
+    if (amountPaid >= totalDue) {
+      // Pagou tudo — marca como pago normalmente
+      await this.markInstallmentPaid(installmentId);
+      return { remaining: 0, newDueDate: '' };
+    }
+
+    const remaining = parseFloat((totalDue - amountPaid).toFixed(2));
+
+    // Próxima data de vencimento para o saldo restante
+    const nextDate = this.getDueDate(new Date(), 1, contract.billingType ?? 'monthly', contract.skipNonBusinessDays ?? false);
+
+    // Número da próxima parcela
+    const existingCount = this.installments.filter(i => i.contractId === inst.contractId).length;
+
+    const paidAt = new Date().toISOString();
+
+    // Marca a parcela atual como paga pelo valor parcial
+    this.installments = this.installments.map(i =>
+      i.id === installmentId
+        ? { ...i, status: 'paid' as const, paidAt, interestPaid: interestNow, amount: amountPaid }
+        : i,
+    );
+
+    // Cria nova parcela com o saldo restante
+    const newInstLocal: Installment = {
+      id: `i-${Date.now()}-partial`,
+      contractId: inst.contractId,
+      number: existingCount + 1,
+      amount: remaining,
+      dueDate: nextDate,
+      status: 'pending',
+    };
+    this.installments.push(newInstLocal);
+
+    // Atualiza totalAmount e installmentsCount do contrato
+    this.contracts = this.contracts.map(c =>
+      c.id === inst.contractId
+        ? { ...c, installmentsCount: c.installmentsCount + 1 }
+        : c,
+    );
+    this.notify();
+
+    const user = await this.getCurrentUser();
+    if (user) {
+      try {
+        await updateDoc(doc(db, 'users', user.uid, 'installments', installmentId), {
+          status: 'paid', paidAt, interestPaid: interestNow, amount: amountPaid,
+        });
+        await updateDoc(doc(db, 'users', user.uid, 'contracts', inst.contractId), {
+          installmentsCount: contract.installmentsCount + 1,
+        });
+        // Cria nova parcela no Firebase
+        await addDoc(collection(db, 'users', user.uid, 'installments'), {
+          contractId: inst.contractId,
+          number: existingCount + 1,
+          amount: remaining,
+          dueDate: nextDate,
+          status: 'pending',
+        });
+      } catch (e) { console.error('[partialPayment]', e); }
+    }
+
+    return { remaining, newDueDate: nextDate };
+  }
+
   async markInstallmentPaid(id: string) {
     const paidAt = new Date().toISOString();
 
