@@ -875,6 +875,154 @@ const ProjectedInterestPanel = ({ stats }: { stats: any }) => {
   );
 };
 
+// ─── PartialPaymentModal ──────────────────────────────────────────────────────
+
+const PartialPaymentModal = ({
+  inst, contract, onClose, onRefresh,
+}: {
+  inst: EnrichedInstallment;
+  contract: Contract;
+  onClose: () => void;
+  onRefresh: () => void;
+}) => {
+  const [amountStr, setAmountStr] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<{ remaining: number; newDueDate: string } | null>(null);
+
+  const amount = parseFloat(amountStr.replace(',', '.')) || 0;
+  const totalDue = inst.totalDue; // já inclui juros computados
+  const remaining = amount > 0 ? parseFloat((totalDue - Math.min(amount, totalDue)).toFixed(2)) : totalDue;
+  const isValid = amount > 0 && amount < totalDue;
+  const isFullPayment = amount >= totalDue;
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (amount <= 0) return;
+    setLoading(true);
+    const res = await dataService.applyPartialPayment(inst.id, amount);
+    setResult(res);
+    setLoading(false);
+    onRefresh();
+  };
+
+  if (result) {
+    return (
+      <Modal title="Pagamento Registrado" onClose={onClose}>
+        <div className="space-y-4 text-center">
+          <div className="w-16 h-16 rounded-full bg-accent/10 border border-accent/30 flex items-center justify-center mx-auto">
+            <CheckCircle2 size={32} className="text-accent" />
+          </div>
+          {result.remaining > 0 ? (
+            <>
+              <div>
+                <p className="text-base font-bold text-text-main">Pagamento parcial registrado!</p>
+                <p className="text-sm text-text-dim mt-1">Parcela quitada pelo valor informado.</p>
+              </div>
+              <div className="bg-warning/5 border border-warning/20 rounded-xl p-4 text-left space-y-2">
+                <div className="flex justify-between text-sm">
+                  <span className="text-text-dim">Valor pago</span>
+                  <span className="text-accent font-bold">R$ {fmt(amount)}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-text-dim">Saldo restante</span>
+                  <span className="text-danger font-bold">R$ {fmt(result.remaining)}</span>
+                </div>
+                <div className="flex justify-between text-sm border-t border-border/40 pt-2">
+                  <span className="text-text-dim">Nova parcela criada com vencimento</span>
+                  <span className="text-warning font-mono font-bold">{fmtDate(result.newDueDate)}</span>
+                </div>
+              </div>
+              <p className="text-[11px] text-text-dim">
+                O saldo de R$ {fmt(result.remaining)} foi lançado como nova parcela no contrato.
+              </p>
+            </>
+          ) : (
+            <div>
+              <p className="text-base font-bold text-text-main">Parcela totalmente paga!</p>
+              <p className="text-sm text-text-dim mt-1">Valor coberto integralmente.</p>
+            </div>
+          )}
+          <Btn onClick={onClose} className="w-full justify-center">Fechar</Btn>
+        </div>
+      </Modal>
+    );
+  }
+
+  return (
+    <Modal title={`Pagamento — Parcela ${inst.number}ª`} onClose={onClose}>
+      <form className="space-y-4" onSubmit={handleSubmit}>
+        {/* Resumo da parcela */}
+        <div className="bg-sidebar border border-border rounded-xl p-4 space-y-2 text-sm">
+          <div className="flex justify-between">
+            <span className="text-text-dim">Principal</span>
+            <span className="font-mono font-medium">R$ {fmt(inst.amount)}</span>
+          </div>
+          {inst.computedInterest > 0 && (
+            <div className="flex justify-between">
+              <span className="text-text-dim">Juros acumulados ({inst.daysLate}d)</span>
+              <span className="font-mono text-danger">+R$ {fmt(inst.computedInterest)}</span>
+            </div>
+          )}
+          <div className="flex justify-between border-t border-border/40 pt-2 font-bold">
+            <span className="text-text-main">Total devido</span>
+            <span className="font-mono text-text-main">R$ {fmt(totalDue)}</span>
+          </div>
+        </div>
+
+        <Field label="Valor Recebido (R$) *">
+          <div className="relative">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-text-dim text-sm font-bold">R$</span>
+            <input
+              autoFocus
+              type="number"
+              min="0.01"
+              step="0.01"
+              max={totalDue}
+              value={amountStr}
+              onChange={e => setAmountStr(e.target.value)}
+              placeholder="0,00"
+              className="w-full bg-bg border border-border rounded-lg pl-9 pr-3 py-2.5 text-sm text-text-main outline-none focus:border-accent/50 transition-colors placeholder:text-text-dim/40 font-mono"
+            />
+          </div>
+        </Field>
+
+        {/* Prévia do resultado */}
+        {amount > 0 && (
+          <div className={`rounded-xl p-4 space-y-2 text-sm border ${isFullPayment ? 'bg-accent/5 border-accent/20' : 'bg-warning/5 border-warning/20'}`}>
+            {isFullPayment ? (
+              <div className="flex items-center gap-2 text-accent font-semibold">
+                <CheckCircle2 size={16} /> Cobre o total — parcela será marcada como paga
+              </div>
+            ) : (
+              <>
+                <div className="flex justify-between">
+                  <span className="text-text-dim">Valor pago agora</span>
+                  <span className="text-accent font-mono font-bold">R$ {fmt(amount)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-text-dim">Saldo restante</span>
+                  <span className="text-danger font-mono font-bold">R$ {fmt(remaining)}</span>
+                </div>
+                <p className="text-[11px] text-warning/80 border-t border-warning/20 pt-2">
+                  O saldo de R$ {fmt(remaining)} será lançado como nova parcela no próximo vencimento.
+                </p>
+              </>
+            )}
+          </div>
+        )}
+
+        <div className="flex gap-3 pt-1">
+          <Btn type="submit" disabled={loading || amount <= 0} className="flex-1 justify-center py-2.5">
+            {loading ? <div className="w-4 h-4 border-2 border-bg border-t-transparent rounded-full animate-spin" /> : <CheckCircle2 size={15} />}
+            {loading ? 'Registrando...' : 'Confirmar Pagamento'}
+          </Btn>
+          <Btn type="button" variant="ghost" onClick={onClose}>Cancelar</Btn>
+        </div>
+      </form>
+    </Modal>
+  );
+};
+
 // ─── ContractProjectionPanel ─────────────────────────────────────────────────
 // Painel interativo de juros projetados por período para um contrato específico
 
@@ -1177,6 +1325,7 @@ const ContractsView = ({ contracts, clients, installments, onRefresh, onNavigate
   const [addModal, setAddModal] = useState(false);
   const [editingContract, setEditingContract] = useState<Contract | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [partialInst, setPartialInst] = useState<{ inst: EnrichedInstallment; contract: Contract } | null>(null);
 
   const enriched = dataService.getEnrichedInstallments();
 
@@ -1413,6 +1562,13 @@ const ContractsView = ({ contracts, clients, installments, onRefresh, onNavigate
                               {inst.status !== 'paid'
                                 ? <div className="flex flex-col gap-1">
                                     <button onClick={() => { dataService.markInstallmentPaid(inst.id); onRefresh(); }} className="px-2 py-0.5 rounded bg-accent/10 text-accent text-[10px] hover:bg-accent/20 w-fit">✓ Pago</button>
+                                    <button
+                                      onClick={() => setPartialInst({ inst, contract: c })}
+                                      className="px-2 py-0.5 rounded bg-sidebar border border-border text-text-dim text-[10px] hover:bg-white/5 hover:text-text-main w-fit whitespace-nowrap"
+                                      title="Registrar pagamento de um valor parcial"
+                                    >
+                                      $ Pagar Valor
+                                    </button>
                                     {inst.status === 'overdue' && inst.computedInterest > 0 && (
                                       <button
                                         onClick={async () => {
@@ -1423,7 +1579,7 @@ const ContractsView = ({ contracts, clients, installments, onRefresh, onNavigate
                                           onRefresh();
                                         }}
                                         className="px-2 py-0.5 rounded bg-warning/10 text-warning text-[10px] hover:bg-warning/20 border border-warning/20 w-fit whitespace-nowrap"
-                                        title="Registra o pagamento apenas dos juros e zera o atraso. O principal continua pendente."
+                                        title="Registra o pagamento apenas dos juros e zera o atraso."
                                       >
                                         $ Só Juros
                                       </button>
@@ -1456,6 +1612,14 @@ const ContractsView = ({ contracts, clients, installments, onRefresh, onNavigate
           <Modal title={`Editar Contrato — ${clients.find((cl: Client) => cl.id === editingContract.clientId)?.name ?? 'Contrato'}`} onClose={() => setEditingContract(null)}>
             <ContractEditForm contract={editingContract} clients={clients} onSave={handleEdit} onClose={() => setEditingContract(null)} />
           </Modal>
+        )}
+        {partialInst && (
+          <PartialPaymentModal
+            inst={partialInst.inst}
+            contract={partialInst.contract}
+            onClose={() => setPartialInst(null)}
+            onRefresh={onRefresh}
+          />
         )}
       </AnimatePresence>
     </div>
